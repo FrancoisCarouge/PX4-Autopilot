@@ -121,3 +121,12 @@
 [submodule "src/lib/ulog_cpp"]
 	path = src/lib/ulog_cpp
 	url = https://github.com/PX4/ulog_cpp.git
+[submodule "src/lib/fcarouge/Kalman"]
+	path = src/lib/fcarouge/Kalman
+	url = https://github.com/FrancoisCarouge/Kalman.git
+[submodule "src/lib/fcarouge/TypedLinearAlgebra"]
+	path = src/lib/fcarouge/TypedLinearAlgebra
+	url = https://github.com/FrancoisCarouge/TypedLinearAlgebra.git
+[submodule "src/lib/fcarouge/mp-units"]
+	path = src/lib/fcarouge/mp-units
+	url = https://github.com/mpusz/mp-units.git
