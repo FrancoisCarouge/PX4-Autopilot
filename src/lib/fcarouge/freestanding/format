@@ -1,0 +1,5 @@
+// An empty <format>, searched before the toolchain's freestanding headers by
+// the NuttX builds of the fcarouge libraries: TypedLinearAlgebra includes
+// <format> unconditionally, which freestanding builds do not provide, for a
+// formatting support that px4_typed_linear_algebra.hpp leaves out there.
+#pragma once
