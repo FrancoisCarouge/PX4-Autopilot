@@ -43,6 +43,8 @@
 
 namespace landing_target_estimator
 {
+using namespace typed;
+
 KalmanFilter::KalmanFilter(matrix::Vector<float, 2> &initial, matrix::Matrix<float, 2, 2> &covInit)
 {
 	init(initial, covInit);
@@ -50,104 +52,76 @@ KalmanFilter::KalmanFilter(matrix::Vector<float, 2> &initial, matrix::Matrix<flo
 
 void KalmanFilter::init(matrix::Vector<float, 2> &initial, matrix::Matrix<float, 2, 2> &covInit)
 {
-	_x = initial;
-	_covariance = covInit;
+	// the values in the units of the elements: m, m/s, and their products
+	_filter.x(State{fcarouge_px4::Matrix<float, 2, 1>{initial}});
+	_filter.p(Covariance{fcarouge_px4::Matrix<float, 2, 2>{covInit}});
 }
 
 void KalmanFilter::init(float initial0, float initial1, float covInit00, float covInit11)
 {
-	matrix::Vector<float, 2> initial;
-	initial(0) = initial0;
-	initial(1) = initial1;
-	matrix::Matrix<float, 2, 2> covInit;
-	covInit(0, 0) = covInit00;
-	covInit(1, 1) = covInit11;
-
-	init(initial, covInit);
+	_filter.x(State{initial0 * metre, initial1 * metre_per_second});
+	Covariance covInit{};
+	covInit.at<0, 0>(covInit00 * (metre * metre));
+	covInit.at<1, 1>(covInit11 * (metre_per_second * metre_per_second));
+	_filter.p(covInit);
 }
 
 void KalmanFilter::predict(float dt, float acc, float acc_unc)
 {
-	_x(0) += _x(1) * dt + dt * dt / 2 * acc;
-	_x(1) += acc * dt;
-
-	matrix::Matrix<float, 2, 2> A; // propagation matrix
-	A(0, 0) = 1;
-	A(1, 1) = 1;
-	A(0, 1) = dt;
-
-	matrix::Matrix<float, 2, 1> G; // noise model
-	G(0, 0) = dt * dt / 2;
-	G(1, 0) = dt;
-
-	matrix::Matrix<float, 2, 2> process_noise = G * G.transpose() * acc_unc;
-
-	_covariance = A * _covariance * A.transpose() + process_noise;
+	_filter.predict(dt * second, acc_unc * AccelerationVariance::reference, Input{acc * metre_per_second_squared});
 }
 
 bool KalmanFilter::update(float meas, float measUnc)
 {
+	const Position position{meas * metre};
+	const PositionVariance variance{measUnc *(metre * metre)};
 
 	// H = [1, 0]
-	_residual = meas - _x(0);
+	_residual = position - _filter.x().at<0>();
 
 	// H * P * H^T simply selects P(0,0)
-	_innovCov = _covariance(0, 0) + measUnc;
+	_innovCov = _filter.p().at<0, 0>() + variance;
 
-	// outlier rejection
-	float beta = _residual / _innovCov * _residual;
+	// outlier rejection, before the filter's update
+	const float beta = (_residual / _innovCov * _residual).numerical_value_in(mp_units::one);
 
 	// 5% false alarm probability
 	if (beta > 3.84f) {
 		return false;
 	}
 
-	matrix::Vector<float, 2> kalmanGain;
-	kalmanGain(0) = _covariance(0, 0);
-	kalmanGain(1) = _covariance(1, 0);
-	kalmanGain /= _innovCov;
-
-	_x += kalmanGain * _residual;
-
-	matrix::Matrix<float, 2, 2> identity;
-	identity.identity();
-
-	matrix::Matrix<float, 2, 2> KH; // kalmanGain * H
-	KH(0, 0) = kalmanGain(0);
-	KH(1, 0) = kalmanGain(1);
-
-	_covariance = (identity - KH) * _covariance;
+	_filter.r(OutputVariance{variance});
+	_filter.update(Output{position});
 
 	return true;
-
 }
 
 void KalmanFilter::getState(matrix::Vector<float, 2> &state)
 {
-	state = _x;
+	state = _filter.x().data().toMatrix();
 }
 
 void KalmanFilter::getState(float &state0, float &state1)
 {
-	state0 = _x(0);
-	state1 = _x(1);
+	state0 = _filter.x().at<0>().numerical_value_in(metre);
+	state1 = _filter.x().at<1>().numerical_value_in(metre_per_second);
 }
 
 void KalmanFilter::getCovariance(matrix::Matrix<float, 2, 2> &covariance)
 {
-	covariance = _covariance;
+	covariance = _filter.p().data().toMatrix();
 }
 
 void KalmanFilter::getCovariance(float &cov00, float &cov11)
 {
-	cov00 = _covariance(0, 0);
-	cov11 = _covariance(1, 1);
+	cov00 = _filter.p().at<0, 0>().numerical_value_in(metre * metre);
+	cov11 = _filter.p().at<1, 1>().numerical_value_in(metre_per_second * metre_per_second);
 }
 
 void KalmanFilter::getInnovations(float &innov, float &innovCov)
 {
-	innov = _residual;
-	innovCov = _innovCov;
+	innov = _residual.numerical_value_in(metre);
+	innovCov = _innovCov.numerical_value_in(metre * metre);
 }
 
 } // namespace landing_target_estimator
