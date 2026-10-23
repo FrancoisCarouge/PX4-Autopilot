@@ -36,6 +36,7 @@ add_library(wind_estimator
 	WindEstimator.hpp
 )
 add_dependencies(wind_estimator prebuild_targets)
+target_link_libraries(wind_estimator PUBLIC fcarouge)
 
 add_subdirectory(test)
 
