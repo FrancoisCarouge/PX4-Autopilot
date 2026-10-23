@@ -50,3 +50,28 @@ target_compile_definitions(fcarouge INTERFACE
 	MP_UNITS_API_CONTRACTS=0
 	MP_UNITS_API_THROWING_CONSTRAINTS=0
 )
+
+# NuttX builds drop the toolchain's C++ standard library with -nostdinc++. The
+# libraries need its freestanding headers (<concepts>, <tuple>, ...): search the
+# toolchain's C++ include directories for them only, after all others: NuttX
+# still provides the C library and the C++ headers it has.
+if(${PX4_PLATFORM} STREQUAL "nuttx" AND NOT CONFIG_LIB_TFLM)
+	separate_arguments(fcarouge_cxx_flags NATIVE_COMMAND "${CMAKE_CXX_FLAGS}")
+	execute_process(
+		COMMAND ${CMAKE_CXX_COMPILER} ${fcarouge_cxx_flags} -xc++ -E -v -
+		INPUT_FILE /dev/null
+		OUTPUT_QUIET
+		ERROR_VARIABLE fcarouge_search
+	)
+	string(REGEX MATCH "#include <...> search starts here:\n(.*)\nEnd of search list" fcarouge_search "${fcarouge_search}")
+	string(REPLACE "\n" ";" fcarouge_search "${CMAKE_MATCH_1}")
+	foreach(directory ${fcarouge_search})
+		string(STRIP "${directory}" directory)
+		if(directory MATCHES "/include/c\\+\\+/")
+			file(REAL_PATH "${directory}" directory)
+			# an option: CMake drops include directories implicit to the compiler
+			target_compile_options(fcarouge INTERFACE $<$<COMPILE_LANGUAGE:CXX>:-idirafter${directory}>)
+		endif()
+	endforeach()
+	target_compile_options(fcarouge INTERFACE $<$<COMPILE_LANGUAGE:CXX>:-ffreestanding -fbuiltin>)
+endif()
