@@ -94,7 +94,8 @@ public:
 	void reset_scale_to_init()
 	{
 		_state(INDEX_TAS_SCALE) = _scale_init;
-		auto P_wind = _P.slice<2, 2>(0, 0);
+		// a copy: a slice is a view of _P, which is zeroed next
+		const matrix::SquareMatrix<float, 2> P_wind = _P.slice<2, 2>(0, 0);
 		_P.setZero();
 		_P.slice<2, 2>(0, 0) = P_wind;
 	}
