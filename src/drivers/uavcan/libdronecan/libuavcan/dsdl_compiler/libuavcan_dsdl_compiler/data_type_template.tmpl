@@ -76,12 +76,12 @@ struct UAVCAN_EXPORT ${t.cpp_type_name}
         <!--(macro expand_enum_per_field)--> #! enum_name, enum_comparator
     enum
     {
-        ${enum_name} = TagType::BitLen +
+        ${enum_name} = unsigned(TagType::BitLen) + unsigned(
             % for idx,last,a in enum_last_value(fields):
                 % if not last:
             ::uavcan::${enum_comparator}<FieldTypes::${a.name}::${enum_name},
                 % else:
-                FieldTypes::${a.name}::${enum_name} ${'>::Result' * (len(fields) - 1)}
+                FieldTypes::${a.name}::${enum_name} ${'>::Result' * (len(fields) - 1)})
                 % endif
             % endfor
     };
@@ -97,7 +97,7 @@ struct UAVCAN_EXPORT ${t.cpp_type_name}
     {
         ${enum_name}
             % for idx,a in enumerate(fields):
-            ${'=' if idx == 0 else '+'} FieldTypes::${a.name}::${enum_name}
+            ${'=' if idx == 0 else '+'} unsigned(FieldTypes::${a.name}::${enum_name})
             % endfor
     };
         <!--(end)-->
