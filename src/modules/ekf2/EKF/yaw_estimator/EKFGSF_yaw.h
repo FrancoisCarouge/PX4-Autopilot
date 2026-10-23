@@ -116,12 +116,22 @@ private:
 	// Declarations used by a bank of N_MODELS_EKFGSF EKFs
 
 	struct {
-		matrix::Vector3f X{};                       // Vel North (m/s),  Vel East (m/s), yaw (rad)s
-		matrix::SquareMatrix<float, 3> P{};         // covariance matrix
 		float nis{};                                // normalized innovation squared
 		float S_det_inverse{};                      // inverse of the innovation covariance matrix determinant
 		matrix::Vector2f innov{};                   // Velocity N,E innovation (m/s)
 	} _ekf_gsf[N_MODELS_EKFGSF] {};
+
+	// The typed Kalman filter of each model: its Vel North (m/s), Vel East (m/s) and yaw (rad) states and
+	// their covariance. Defined in EKFGSF_yaw.cpp to keep its expensive headers out of this one, and
+	// held in this storage, which copies it as its trivial copy constructor does.
+	struct Filter;
+	static constexpr size_t kFilterSize{232};
+	struct alignas(8) FilterStorage {
+		unsigned char bytes[kFilterSize];
+	} _filters[N_MODELS_EKFGSF] {};
+
+	Filter &filter(const uint8_t model_index);
+	const Filter &filter(const uint8_t model_index) const;
 
 	bool _ekf_gsf_vel_fuse_started{}; // true when the EKF's have started fusing velocity data and the prediction and update processing is active
 
