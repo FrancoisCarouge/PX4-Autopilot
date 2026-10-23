@@ -67,72 +67,137 @@
 #include <geo/geo.h>
 #include <mathlib/mathlib.h>
 
+#include <fcarouge/kalman.hpp>
+#include <mp_units/fcarouge/kalman_mp_units.hpp>
+#include <mp-units/framework.h>
+#include <mp-units/systems/si.h>
+
+namespace zero_order_hover_thrust_ekf
+{
+
+template <auto Reference>
+using Quantity = mp_units::quantity<Reference, float>;
+
+inline constexpr auto metre_per_second_squared = mp_units::si::metre / (mp_units::si::second * mp_units::si::second);
+
+/// a thrust normalized to the vehicle's maximum, and its variance
+using Thrust = Quantity<mp_units::one>;
+/// the vertical acceleration, the observation, and its variance
+using Acceleration = Quantity<metre_per_second_squared>;
+using AccelerationVariance = Quantity<metre_per_second_squared *metre_per_second_squared>;
+/// the derivative of the observation with respect to the hover thrust
+using AccelerationPerThrust = decltype(Acceleration{} / Thrust{});
+
+inline constexpr Acceleration gravity{CONSTANTS_ONE_G * metre_per_second_squared};
+
+/// h(u, x) = g * T / Th - g, with the thrust T as the update argument
+inline Acceleration predictedAccZ(const Thrust &hover_thrust, const Thrust &thrust)
+{
+	return gravity * thrust / hover_thrust - gravity;
+}
+
+/// H = -g * T / Th^2
+inline AccelerationPerThrust observationJacobian(const Thrust &hover_thrust, const Thrust &thrust)
+{
+	return -gravity * thrust / (hover_thrust * hover_thrust);
+}
+
+inline auto makeFilter()
+{
+	using namespace fcarouge;
+	return kalman{
+		state{Thrust{0.5f * mp_units::one}},
+		output<Acceleration>,
+		// the hover thrust uncertainty variance (thrust^2)
+		estimate_uncertainty{Thrust{0.01f * mp_units::one}},
+		// set before each prediction
+		process_uncertainty{Thrust{0.f *mp_units::one}},
+		// set before each update
+		output_uncertainty{AccelerationVariance{5.f *AccelerationVariance::reference}},
+		output_model{
+			[](const Thrust & hover_thrust, const Thrust & thrust) -> AccelerationPerThrust {
+				return observationJacobian(hover_thrust, thrust);
+			}},
+		// the state is noise driven: the transition is the identity
+		transition{[](const Thrust & hover_thrust) -> Thrust { return hover_thrust; }},
+		observation{
+			[](const Thrust & hover_thrust, const Thrust & thrust) -> Acceleration {
+				return predictedAccZ(hover_thrust, thrust);
+			}},
+		update_types<Thrust>,
+		prediction_types<>};
+}
+
+} // namespace zero_order_hover_thrust_ekf
+
 class ZeroOrderHoverThrustEkf
 {
 public:
 	ZeroOrderHoverThrustEkf() = default;
 	~ZeroOrderHoverThrustEkf() = default;
 
-	void resetAccelNoise() { _acc_var = 5.f; };
+	void resetAccelNoise() { _acc_var = 5.f * AccelerationVariance::reference; };
 
 	void predict(float _dt);
 	void fuseAccZ(float acc_z, float thrust);
 
-	void setHoverThrust(float hover_thrust) { _hover_thr = math::constrain(hover_thrust, _hover_thr_min, _hover_thr_max); }
+	void setHoverThrust(float hover_thrust) { _filter.x(Thrust{math::constrain(hover_thrust, _hover_thr_min, _hover_thr_max) * mp_units::one}); }
 	void setProcessNoiseStdDev(float process_noise) { _process_var = process_noise * process_noise; }
 	void setMeasurementNoiseScale(float scale) { _acc_var_scale = scale * scale; }
-	void setHoverThrustStdDev(float hover_thrust_noise) { _state_var = hover_thrust_noise * hover_thrust_noise; }
+	void setHoverThrustStdDev(float hover_thrust_noise) { _filter.p(Thrust{hover_thrust_noise *hover_thrust_noise * mp_units::one}); }
 	void setAccelInnovGate(float gate_size) { _gate_size = gate_size; }
 	void setMinHoverThrust(float hover_thrust_min) { _hover_thr_min = math::constrain(hover_thrust_min, 0.1f, 0.8f); }
 	void setMaxHoverThrust(float hover_thrust_max) { _hover_thr_max = math::constrain(hover_thrust_max, 0.2f, 0.9f); }
 
-	float getHoverThrustEstimate() const { return _hover_thr; }
-	float getHoverThrustEstimateVar() const { return _state_var; }
-	float getInnovation() const { return _innov; }
-	float getInnovationVar() const { return _innov_var; }
+	float getHoverThrustEstimate() const { return _filter.x().numerical_value_in(mp_units::one); }
+	float getHoverThrustEstimateVar() const { return _filter.p().numerical_value_in(mp_units::one); }
+	float getInnovation() const { return _innov.numerical_value_in(metre_per_second_squared); }
+	float getInnovationVar() const { return _innov_var.numerical_value_in(AccelerationVariance::unit); }
 	float getInnovationTestRatio() const { return _innov_test_ratio; }
-	float getAccelNoiseVar() const { return _acc_var; }
+	float getAccelNoiseVar() const { return _acc_var.numerical_value_in(AccelerationVariance::unit); }
 
 private:
-	float _hover_thr{0.5f};
+	using Thrust = zero_order_hover_thrust_ekf::Thrust;
+	using Acceleration = zero_order_hover_thrust_ekf::Acceleration;
+	using AccelerationVariance = zero_order_hover_thrust_ekf::AccelerationVariance;
+	using AccelerationPerThrust = zero_order_hover_thrust_ekf::AccelerationPerThrust;
+	static constexpr auto metre_per_second_squared = zero_order_hover_thrust_ekf::metre_per_second_squared;
+
+	/// the hover thrust and its variance
+	decltype(zero_order_hover_thrust_ekf::makeFilter()) _filter{zero_order_hover_thrust_ekf::makeFilter()};
 	float _hover_thr_min{0.1f};
 	float _hover_thr_max{0.9f};
 
 	float _gate_size{3.f};
-	float _state_var{0.01f}; ///< Initial hover thrust uncertainty variance (thrust^2)
 	float _process_var{12.5e-6f}; ///< Hover thrust process noise variance (thrust^2/s^2)
-	float _acc_var{5.f}; ///< Acceleration variance (m^2/s^3)
+	AccelerationVariance _acc_var{5.f *AccelerationVariance::reference};  ///< Acceleration variance
 	float _acc_var_scale{1.f}; ///< Multiplicator of the measurement variance, used to decrease sensivity
 	float _dt{0.02f};
 
-	float _innov{0.f}; ///< Measurement innovation (m/s^2)
-	float _innov_var{0.f}; ///< Measurement innovation variance (m^2/s^3)
+	Acceleration _innov{}; ///< Measurement innovation
+	AccelerationVariance _innov_var{}; ///< Measurement innovation variance
 	float _innov_test_ratio{0.f}; ///< Noramlized Innovation Squared test ratio
 
-	float _residual_lpf{}; ///< used to remove the constant bias of the residual
+	Acceleration _residual_lpf{}; ///< used to remove the constant bias of the residual
 	float _signed_innov_test_ratio_lpf{}; ///< used as a delay to trigger the recovery logic
 
-	float computeH(float thrust) const;
-	float computeInnovVar(float H) const;
-	float computePredictedAccZ(float thrust) const;
-	float computeInnov(float acc_z, float thrust) const;
-	float computeKalmanGain(float H, float innov_var) const;
+	AccelerationVariance computeInnovVar(AccelerationPerThrust H) const;
+	Acceleration computeInnov(Acceleration acc_z, Thrust thrust) const;
 
 	/*
 	 * Compute the ratio between the Normalized Innovation Squared (NIS)
 	 * and its maximum gate size. Use isTestRatioPassing to know if the
 	 * measurement should be fused or not.
 	 */
-	float computeInnovTestRatio(float innov, float innov_var) const;
+	float computeInnovTestRatio(Acceleration innov, AccelerationVariance innov_var) const;
 	bool isTestRatioPassing(float innov_test_ratio) const;
 
-	void updateState(float K, float innov);
-	void updateStateCovariance(float K, float H);
+	void constrainState();
 	bool isLargeOffsetDetected() const;
 
 	void bumpStateVariance();
-	void updateLpf(float residual, float signed_innov_test_ratio);
-	void updateMeasurementNoise(float residual, float H);
+	void updateLpf(Acceleration residual, float signed_innov_test_ratio);
+	void updateMeasurementNoise(Acceleration residual, AccelerationPerThrust H);
 
 	static constexpr float _noise_learning_time_constant = 2.f; ///< in seconds
 	static constexpr float _lpf_time_constant = 1.f; ///< in seconds
