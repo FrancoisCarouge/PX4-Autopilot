@@ -104,6 +104,17 @@ auto makeFilter()
 		// set by each update
 		output_uncertainty{OutputVariance{}},
 		output_model{[](const State &) -> OutputModel { return velocityOutputModel(); }},
+		// Jacobian of the state prediction: a yaw error rotates the delta velocity
+		state_transition{
+			[](const State &, const Velocity & del_vel_N, const Velocity & del_vel_E) -> StateTransition {
+				StateTransition F{};
+				F.at<0, 0>(1.f * one);
+				F.at<1, 1>(1.f * one);
+				F.at<2, 2>(1.f * one);
+				F.at<0, 2>(-del_vel_E / (1.f * radian));
+				F.at<1, 2>(del_vel_N / (1.f * radian));
+				return F;
+			}},
 		// sum delta velocities in earth frame
 		transition{
 			[](const State & x, const Velocity & del_vel_N, const Velocity & del_vel_E) -> State {
@@ -392,15 +403,6 @@ void EKFGSF_yaw::predictEKF(const uint8_t model_index, const Vector3f &delta_ang
 	const Vector3f del_vel_NED = R * delta_vel;
 	const Velocity del_vel_N = del_vel_NED(0) * metre_per_second;
 	const Velocity del_vel_E = del_vel_NED(1) * metre_per_second;
-
-	// Jacobian of the state prediction: a yaw error rotates the delta velocity
-	StateTransition F{};
-	F.at<0, 0>(1.f * one);
-	F.at<1, 1>(1.f * one);
-	F.at<2, 2>(1.f * one);
-	F.at<0, 2>(-del_vel_E / (1.f * radian));
-	F.at<1, 2>(del_vel_N / (1.f * radian));
-	kalman.f(F);
 
 	// delta velocity process noise double if we're not in air
 	const float accel_noise = in_air ? _accel_noise : 2.f * _accel_noise;
