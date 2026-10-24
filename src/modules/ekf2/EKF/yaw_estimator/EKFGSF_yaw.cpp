@@ -37,7 +37,7 @@
 
 #include <lib/geo/geo.h> // CONSTANTS_ONE_G
 
-#include <fcarouge/px4_kalman.hpp>
+#include <fcarouge/kalman.hpp>
 #include <fcarouge/px4_typed_linear_algebra.hpp>
 #include <typed/fcarouge/kalman_typed_linear_algebra.hpp>
 #include <mp_units/fcarouge/kalman_mp_units.hpp>

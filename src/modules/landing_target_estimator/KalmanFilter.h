@@ -51,7 +51,7 @@
 #include <matrix/math.hpp>
 #include <mathlib/mathlib.h>
 
-#include <fcarouge/px4_kalman.hpp>
+#include <fcarouge/kalman.hpp>
 #include <fcarouge/px4_typed_linear_algebra.hpp>
 #include <typed/fcarouge/kalman_typed_linear_algebra.hpp>
 #include <mp_units/fcarouge/kalman_mp_units.hpp>

@@ -36,18 +36,12 @@
  *
  * The FrancoisCarouge TypedLinearAlgebra library for PX4, with its mp-units
  * support, over a fixed size matrix backend: include this header, not
- * <fcarouge/typed_linear_algebra.hpp>. Each element of a typed matrix has its
- * own type, an mp-units quantity for example, so that unit mismatches fail to
- * compile. NuttX builds are freestanding: the library's formatting and
- * std::chrono support needs hosted headers, so it is left out there.
+ * <fcarouge/typed_linear_algebra.hpp> directly when the backend is not needed.
+ * Each element of a typed matrix has its own type, an mp-units quantity for
+ * example, so that unit mismatches fail to compile.
  */
 
 #pragma once
-
-#if !__STDC_HOSTED__
-#define FCAROUGE_TYPED_LINEAR_ALGEBRA_CHRONO_TPP
-#define FCAROUGE_TYPED_LINEAR_ALGEBRA_FORMAT_TPP
-#endif
 
 #include <cstddef>
 #include <tuple>
