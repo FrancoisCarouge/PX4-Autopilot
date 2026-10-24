@@ -46,15 +46,90 @@
  *
  */
 
+#pragma once
+
 #include <matrix/math.hpp>
 #include <mathlib/mathlib.h>
-#include <matrix/Matrix.hpp>
-#include <matrix/Vector.hpp>
 
-#pragma once
+#include <fcarouge/kalman.hpp>
+#include <fcarouge/px4_typed_linear_algebra.hpp>
+#include <typed/fcarouge/kalman_typed_linear_algebra.hpp>
+#include <mp_units/fcarouge/kalman_mp_units.hpp>
+#include <mp-units/systems/si.h>
 
 namespace landing_target_estimator
 {
+namespace typed
+{
+template <auto Reference>
+using Quantity = mp_units::quantity<Reference, float>;
+
+inline constexpr auto metre = mp_units::si::metre;
+inline constexpr auto second = mp_units::si::second;
+inline constexpr auto metre_per_second = metre / second;
+inline constexpr auto metre_per_second_squared = metre / (second *second);
+
+using Seconds = Quantity<second>;
+using Position = Quantity<metre>;
+using PositionVariance = Quantity<metre *metre>;
+using Velocity = Quantity<metre_per_second>;
+using Acceleration = Quantity<metre_per_second_squared>;
+using AccelerationVariance = Quantity<metre_per_second_squared *metre_per_second_squared>;
+
+/// the position and velocity of the target relative to the vehicle, along one axis
+using State = fcarouge_px4::ColumnVector<float, Position, Velocity>;
+/// the measured relative position
+using Output = fcarouge_px4::ColumnVector<float, Position>;
+/// the acceleration of the target relative to the vehicle
+using Input = fcarouge_px4::ColumnVector<float, Acceleration>;
+
+namespace kf = fcarouge::kalman_filter::internal;
+using Covariance = kf::evaluate<kf::product<State, kf::evaluate<kf::transpose<State>>>>;
+using OutputVariance = kf::evaluate<kf::product<Output, kf::evaluate<kf::transpose<Output>>>>;
+using StateTransition = kf::evaluate<kf::quotient<State, State>>;
+using InputControl = kf::evaluate<kf::quotient<State, Input>>;
+
+/// G = [dt^2 / 2, dt]: the change of the state per acceleration
+inline InputControl inputControl(const Seconds &dt)
+{
+	return InputControl{dt *dt / 2.f, dt};
+}
+
+/*
+ * x[k+1] = A x[k] + G u[k] with A = [1 dt; 0 1], the acceleration u of
+ * variance acc_unc: Q = G G^T acc_unc. The output is the position: H = [1 0],
+ * the library's default output model.
+ */
+inline auto makeFilter()
+{
+	using namespace fcarouge;
+	return kalman{
+		state{State{0.f * metre, 0.f * metre_per_second}},
+		output<Output>,
+		input<Input>,
+		// set by init()
+		estimate_uncertainty{Covariance{}},
+		process_uncertainty{
+			[](const State &, const Seconds & dt, const AccelerationVariance & acc_unc) -> Covariance {
+				const InputControl g{inputControl(dt)};
+				return Covariance{g *acc_unc * transposed(g)};
+			}},
+		// set by update()
+		output_uncertainty{OutputVariance{0.f *(metre * metre)}},
+		state_transition{[](const Input &, const Seconds & dt, const AccelerationVariance &) -> StateTransition {
+				StateTransition a{};
+				a.at<0, 0>(1.f * mp_units::one);
+				a.at<0, 1>(dt);
+				a.at<1, 1>(1.f * mp_units::one);
+				return a;
+			}},
+		input_control{[](const Seconds & dt, const AccelerationVariance &) -> InputControl {
+				return inputControl(dt);
+			}},
+		prediction_types<Seconds, AccelerationVariance>};
+}
+} // namespace typed
+
 class KalmanFilter
 {
 public:
@@ -139,12 +214,11 @@ public:
 	void getInnovations(float &innov, float &innovCov);
 
 private:
-	matrix::Vector<float, 2> _x; // state
+	/// the state and its covariance
+	decltype(typed::makeFilter()) _filter{typed::makeFilter()};
 
-	matrix::Matrix<float, 2, 2> _covariance; // state covariance
+	typed::Position _residual{}; // residual of last measurement update
 
-	float _residual{0.0f}; // residual of last measurement update
-
-	float _innovCov{0.0f}; // innovation covariance of last measurement update
+	typed::PositionVariance _innovCov{}; // innovation covariance of last measurement update
 };
 } // namespace landing_target_estimator

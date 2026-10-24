@@ -37,7 +37,27 @@
  */
 
 #include "WindEstimator.hpp"
+
+#include <algorithm>
 #include "python/generated/init_wind_using_airspeed.h"
+
+using namespace wind_estimator;
+
+namespace
+{
+// the typed values of the generated functions' matrices, and back
+template <typename Typed, typename T, size_t R, size_t C>
+Typed typed(const matrix::Matrix<T, R, C> &m)
+{
+	return Typed{fcarouge_px4::Matrix<T, R, C>{m}};
+}
+
+template <typename Typed>
+auto untyped(const Typed &typed)
+{
+	return typed.data().toMatrix();
+}
+} // namespace
 
 bool
 WindEstimator::initialise(const matrix::Vector3f &velI, const float hor_vel_variance, const float heading_rad,
@@ -55,22 +75,37 @@ WindEstimator::initialise(const matrix::Vector3f &velI, const float hor_vel_vari
 					   tas_variance,
 					   &wind_init, &P_wind_init);
 
-		_state.xy() = wind_init;
-		_state(INDEX_TAS_SCALE) = _scale_init;
-		_P.slice<2, 2>(0, 0) = P_wind_init;
+		_state = State{wind_init(0) *metre_per_second, wind_init(1) *metre_per_second, _scale_init};
+		// the wind covariance, the scale's variance and covariances kept
+		_P.at<INDEX_W_N, INDEX_W_N>(P_wind_init(0, 0) * SpeedVariance::reference);
+		_P.at<INDEX_W_N, INDEX_W_E>(P_wind_init(0, 1) * SpeedVariance::reference);
+		_P.at<INDEX_W_E, INDEX_W_N>(P_wind_init(1, 0) * SpeedVariance::reference);
+		_P.at<INDEX_W_E, INDEX_W_E>(P_wind_init(1, 1) * SpeedVariance::reference);
 
 	} else {
 		// no airspeed available
-		_state.setZero();
-		_state(INDEX_TAS_SCALE) = 1.0f;
-		_P.setZero();
-		_P(INDEX_W_N, INDEX_W_N) = _P(INDEX_W_E, INDEX_W_E) = sq(kInitialWindError);
+		_state = State{0.f * metre_per_second, 0.f * metre_per_second, 1.f *mp_units::one};
+		_P = Covariance{};
+		_P.at<INDEX_W_N, INDEX_W_N>(sq(kInitialWindError) * SpeedVariance::reference);
+		_P.at<INDEX_W_E, INDEX_W_E>(sq(kInitialWindError) * SpeedVariance::reference);
 	}
 
 	_wind_estimator_reset = true;
 	_time_initialised = hrt_absolute_time();
 
 	return true;
+}
+
+void
+WindEstimator::reset_scale_to_init()
+{
+	_state.at<INDEX_TAS_SCALE>(_scale_init);
+	Covariance P{};
+	P.at<INDEX_W_N, INDEX_W_N>(_P.at<INDEX_W_N, INDEX_W_N>());
+	P.at<INDEX_W_N, INDEX_W_E>(_P.at<INDEX_W_N, INDEX_W_E>());
+	P.at<INDEX_W_E, INDEX_W_N>(_P.at<INDEX_W_E, INDEX_W_N>());
+	P.at<INDEX_W_E, INDEX_W_E>(_P.at<INDEX_W_E, INDEX_W_E>());
+	_P = P;
 }
 
 void
@@ -92,18 +127,32 @@ WindEstimator::update(uint64_t time_now)
 		return;
 	}
 
-	const float dt = (float)(time_now - _time_last_update) * 1e-6f;
+	const Seconds dt{(float)(time_now - _time_last_update) * 1e-6f * mp_units::si::second};
 	_time_last_update = time_now;
 
 	// if airspeed scale is at default (1.0) and we are in the first 5 minutes of flight time, multiply kTasScalePsd by 100 for faster learning
-	const float tas_psd_multiplier = (fabsf(_scale_init - 1.0f) < FLT_EPSILON && (time_now - _time_initialised < kTASScaleFastLearnTime)) ?
-					 kTASScalePSDMultiplier : 1.f;
+	const float tas_psd_multiplier = (fabsf(_scale_init.numerical_value_in(mp_units::one) - 1.0f) < FLT_EPSILON
+					  && (time_now - _time_initialised < kTASScaleFastLearnTime)) ? kTASScalePSDMultiplier : 1.f;
 
-	matrix::Matrix3f Qk;
-	Qk(INDEX_W_N, INDEX_W_N) = _wind_psd * dt;
-	Qk(INDEX_W_E, INDEX_W_E) = Qk(INDEX_W_N, INDEX_W_N);
-	Qk(INDEX_TAS_SCALE, INDEX_TAS_SCALE) = kTasScalePsd * tas_psd_multiplier * dt;
-	_P += Qk;
+	Covariance Qk{};
+	Qk.at<INDEX_W_N, INDEX_W_N>(_wind_psd * dt);
+	Qk.at<INDEX_W_E, INDEX_W_E>(_wind_psd * dt);
+	Qk.at<INDEX_TAS_SCALE, INDEX_TAS_SCALE>(kTasScalePsd * tas_psd_multiplier * dt);
+	_P = Covariance{_P + Qk};
+}
+
+template <typename Observation>
+void
+WindEstimator::correct(const matrix::Matrix<float, 1, 3> &H, const matrix::Matrix<float, 3, 1> &K, Observation innov)
+{
+	const auto h = typed<Jacobian<Observation>>(H);
+	const auto k = typed<Gain<Observation>>(K);
+
+	// apply correction to state
+	_state = State{_state + k *fcarouge_px4::ColumnVector<float, Observation> {innov}};
+
+	// update covariance matrix
+	_P = Covariance{_P - k *h * _P};
 }
 
 void
@@ -113,7 +162,8 @@ WindEstimator::fuse_airspeed(uint64_t time_now, const float true_airspeed, const
 
 	if (!_initialised) {
 		// try to initialise
-		_initialised = initialise(velI, hor_vel_variance, matrix::Eulerf(q_att).psi(), true_airspeed, _tas_var);
+		_initialised = initialise(velI, hor_vel_variance, matrix::Eulerf(q_att).psi(), true_airspeed,
+					  _tas_var.numerical_value_in(SpeedVariance::unit));
 		return;
 	}
 
@@ -126,28 +176,28 @@ WindEstimator::fuse_airspeed(uint64_t time_now, const float true_airspeed, const
 
 	matrix::Matrix<float, 1, 3> H_tas;
 	matrix::Matrix<float, 3, 1> K;
+	float innov_var;
+	float innov;
 
-	sym::FuseAirspeed(velI, _state, _P, true_airspeed, _tas_var, FLT_EPSILON,
-			  &H_tas, &K, &_tas_innov_var, &_tas_innov);
+	sym::FuseAirspeed(velI, untyped(_state), untyped(_P), true_airspeed, _tas_var.numerical_value_in(SpeedVariance::unit),
+			  FLT_EPSILON, &H_tas, &K, &innov_var, &innov);
 
-	const bool meas_is_rejected = check_if_meas_is_rejected(_tas_innov, _tas_innov_var, kTasGate);
+	_tas_innov = innov * metre_per_second;
+	_tas_innov_var = innov_var * SpeedVariance::reference;
 
-	if (_tas_innov_var < FLT_EPSILON) {
+	const bool meas_is_rejected = check_if_meas_is_rejected(innov, innov_var, kTasGate);
+
+	if (innov_var < FLT_EPSILON) {
 		// re init filter in case of a negative variance, and trigger early return to not fuse measurement
-		_initialised = initialise(velI, hor_vel_variance, matrix::Eulerf(q_att).psi(), true_airspeed, _tas_var);
+		_initialised = initialise(velI, hor_vel_variance, matrix::Eulerf(q_att).psi(), true_airspeed,
+					  _tas_var.numerical_value_in(SpeedVariance::unit));
 		return;
 
 	} else if (meas_is_rejected) {
 		return;
 	}
 
-	// apply correction to state
-	_state(INDEX_W_N) += _tas_innov * K(INDEX_W_N, 0);
-	_state(INDEX_W_E) += _tas_innov * K(INDEX_W_E, 0);
-	_state(INDEX_TAS_SCALE) += _tas_innov * K(INDEX_TAS_SCALE, 0);
-
-	// update covariance matrix
-	_P = _P - K * H_tas * _P;
+	correct(H_tas, K, _tas_innov);
 
 	run_sanity_checks();
 }
@@ -171,13 +221,18 @@ WindEstimator::fuse_beta(uint64_t time_now, const matrix::Vector3f &velI, const 
 
 	matrix::Matrix<float, 1, 3> H_beta;
 	matrix::Matrix<float, 3, 1> K;
+	float innov_var;
+	float innov;
 
-	sym::FuseBeta(velI, _state, _P, q_att, kBetaVar, FLT_EPSILON,
-		      &H_beta, &K, &_beta_innov_var, &_beta_innov);
+	sym::FuseBeta(velI, untyped(_state), untyped(_P), q_att, kBetaVar.numerical_value_in(SideslipVariance::unit),
+		      FLT_EPSILON, &H_beta, &K, &innov_var, &innov);
 
-	const bool meas_is_rejected = check_if_meas_is_rejected(_beta_innov, _beta_innov_var, kBetaGate);
+	_beta_innov = innov * mp_units::si::radian;
+	_beta_innov_var = innov_var * SideslipVariance::reference;
 
-	if (_beta_innov_var < FLT_EPSILON) {
+	const bool meas_is_rejected = check_if_meas_is_rejected(innov, innov_var, kBetaGate);
+
+	if (innov_var < FLT_EPSILON) {
 		// re init filter in case of a negative variance, and trigger early return to not fuse measurement
 		_initialised = initialise(velI, hor_vel_variance, matrix::Eulerf(q_att).psi());
 		return;
@@ -186,13 +241,7 @@ WindEstimator::fuse_beta(uint64_t time_now, const matrix::Vector3f &velI, const 
 		return;
 	}
 
-	// apply correction to state
-	_state(INDEX_W_N) += _beta_innov * K(INDEX_W_N, 0);
-	_state(INDEX_W_E) += _beta_innov * K(INDEX_W_E, 0);
-	_state(INDEX_TAS_SCALE) += _beta_innov * K(INDEX_TAS_SCALE, 0);
-
-	// update covariance matrix
-	_P = _P - K * H_beta * _P;
+	correct(H_beta, K, _beta_innov);
 
 	run_sanity_checks();
 }
@@ -200,35 +249,29 @@ WindEstimator::fuse_beta(uint64_t time_now, const matrix::Vector3f &velI, const 
 void
 WindEstimator::run_sanity_checks()
 {
-	for (unsigned i = 0; i < 3; i++) {
-		if (_P(i, i) < 0.0f) {
-			// ill-conditioned covariance matrix, reset filter
-			_initialised = false;
-			return;
-		}
+	const auto wind_var_limit = 25.f * SpeedVariance::reference;
+	const auto scale_var_limit = 0.1f * mp_units::one;
 
-		// limit covariance diagonals if they grow too large
-		if (i < 2) {
-			_P(i, i) = _P(i, i) > 25.0f ? 25.0f : _P(i, i);
-
-		} else if (i == 2) {
-			_P(i, i) = _P(i, i) > 0.1f ? 0.1f : _P(i, i);
-		}
+	if (_P.at<INDEX_W_N, INDEX_W_N>() < 0.f * SpeedVariance::reference
+	    || _P.at<INDEX_W_E, INDEX_W_E>() < 0.f * SpeedVariance::reference
+	    || _P.at<INDEX_TAS_SCALE, INDEX_TAS_SCALE>() < 0.f * mp_units::one) {
+		// ill-conditioned covariance matrix, reset filter
+		_initialised = false;
+		return;
 	}
 
-	if (!_state.isAllFinite()) {
+	// limit covariance diagonals if they grow too large
+	_P.at<INDEX_W_N, INDEX_W_N>(std::min(_P.at<INDEX_W_N, INDEX_W_N>(), wind_var_limit));
+	_P.at<INDEX_W_E, INDEX_W_E>(std::min(_P.at<INDEX_W_E, INDEX_W_E>(), wind_var_limit));
+	_P.at<INDEX_TAS_SCALE, INDEX_TAS_SCALE>(std::min(_P.at<INDEX_TAS_SCALE, INDEX_TAS_SCALE>(), scale_var_limit));
+
+	if (!untyped(_state).isAllFinite()) {
 		_initialised = false;
 		return;
 	}
 
 	// attain symmetry
-	for (unsigned row = 0; row < 3; row++) {
-		for (unsigned column = 0; column < row; column++) {
-			const float tmp = (_P(row, column) + _P(column, row)) * 0.5f;
-			_P(row, column) = tmp;
-			_P(column, row) = tmp;
-		}
-	}
+	_P = Covariance{(_P + fcarouge::transposed(_P)) * 0.5f};
 }
 
 bool
