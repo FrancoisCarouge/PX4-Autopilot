@@ -63,8 +63,6 @@ if(${PX4_PLATFORM} STREQUAL "nuttx" AND NOT CONFIG_LIB_TFLM)
 		OUTPUT_QUIET
 		ERROR_VARIABLE fcarouge_search
 	)
-	# first, an empty <format> for TypedLinearAlgebra (px4_typed_linear_algebra.hpp)
-	target_compile_options(fcarouge INTERFACE $<$<COMPILE_LANGUAGE:CXX>:-idirafter${CMAKE_CURRENT_SOURCE_DIR}/freestanding>)
 	string(REGEX MATCH "#include <...> search starts here:\n(.*)\nEnd of search list" fcarouge_search "${fcarouge_search}")
 	string(REPLACE "\n" ";" fcarouge_search "${CMAKE_MATCH_1}")
 	foreach(directory ${fcarouge_search})

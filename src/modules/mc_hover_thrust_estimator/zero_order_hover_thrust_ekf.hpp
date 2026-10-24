@@ -67,7 +67,7 @@
 #include <geo/geo.h>
 #include <mathlib/mathlib.h>
 
-#include <fcarouge/px4_kalman.hpp>
+#include <fcarouge/kalman.hpp>
 #include <mp_units/fcarouge/kalman_mp_units.hpp>
 #include <mp-units/framework.h>
 #include <mp-units/systems/si.h>
