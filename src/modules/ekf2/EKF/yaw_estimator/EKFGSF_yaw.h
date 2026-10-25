@@ -125,7 +125,7 @@ private:
 	// their covariance. Defined in EKFGSF_yaw.cpp to keep its expensive headers out of this one, and
 	// held in this storage, which copies it as its trivial copy constructor does.
 	struct Filter;
-	static constexpr size_t kFilterSize{232};
+	static constexpr size_t kFilterSize{240};
 	struct alignas(8) FilterStorage {
 		unsigned char bytes[kFilterSize];
 	} _filters[N_MODELS_EKFGSF] {};

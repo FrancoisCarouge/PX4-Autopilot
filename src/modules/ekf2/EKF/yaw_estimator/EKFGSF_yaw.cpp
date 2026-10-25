@@ -70,6 +70,8 @@ constexpr auto yaw_variance = radian * radian;
 
 using Velocity = Quantity<metre_per_second>;
 using Angle = Quantity<radian>;
+using VelocityVariance = Quantity<velocity_variance>;
+using AngleVariance = Quantity<yaw_variance>;
 
 // state: Vel North, Vel East and yaw
 using State = fcarouge_px4::ColumnVector<float, Velocity, Velocity, Angle>;
@@ -99,14 +101,24 @@ auto makeFilter()
 		output<Output>,
 		// set by initialiseEKFGSF()
 		estimate_uncertainty{Covariance{}},
-		// set by each prediction
-		process_uncertainty{Covariance{}},
+		// the delta velocity noise, the same along the front and right axes, is the same along north
+		// and east, and the delta angle noise
+		process_uncertainty{
+			[](const State &, const Velocity &, const Velocity &, const VelocityVariance & d_vel_var,
+			   const AngleVariance & d_ang_var) -> Covariance {
+				Covariance Q{};
+				Q.at<0, 0>(d_vel_var);
+				Q.at<1, 1>(d_vel_var);
+				Q.at<2, 2>(d_ang_var);
+				return Q;
+			}},
 		// set by each update
 		output_uncertainty{OutputVariance{}},
 		output_model{[](const State &) -> OutputModel { return velocityOutputModel(); }},
 		// Jacobian of the state prediction: a yaw error rotates the delta velocity
 		state_transition{
-			[](const State &, const Velocity & del_vel_N, const Velocity & del_vel_E) -> StateTransition {
+			[](const State &, const Velocity & del_vel_N, const Velocity & del_vel_E, const VelocityVariance &,
+			   const AngleVariance &) -> StateTransition {
 				StateTransition F{};
 				F.at<0, 0>(1.f * one);
 				F.at<1, 1>(1.f * one);
@@ -117,11 +129,12 @@ auto makeFilter()
 			}},
 		// sum delta velocities in earth frame
 		transition{
-			[](const State & x, const Velocity & del_vel_N, const Velocity & del_vel_E) -> State {
+			[](const State & x, const Velocity & del_vel_N, const Velocity & del_vel_E, const VelocityVariance &,
+			   const AngleVariance &) -> State {
 				return State{x.at<0>() + del_vel_N, x.at<1>() + del_vel_E, x.at<2>()};
 			}},
 		observation{[](const State & x) -> Output { return Output{x.at<0>(), x.at<1>()}; }},
-		prediction_types<Velocity, Velocity>};
+		prediction_types<Velocity, Velocity, VelocityVariance, AngleVariance>};
 }
 
 // copy the upper half of the covariance matrix to the lower half and constrain the variances
@@ -410,15 +423,8 @@ void EKFGSF_yaw::predictEKF(const uint8_t model_index, const Vector3f &delta_ang
 	// Use fixed values for delta angle process noise variances
 	const float d_ang_var = sq(_gyro_noise * delta_ang_dt);
 
-	// the delta velocity noise, the same along the front and right axes, is the same along north and east
-	Covariance Q{};
-	Q.at<0, 0>(d_vel_var * velocity_variance);
-	Q.at<1, 1>(d_vel_var * velocity_variance);
-	Q.at<2, 2>(d_ang_var * yaw_variance);
-	kalman.q(Q);
-
 	// sum delta velocities in earth frame, and predict the covariance
-	kalman.predict(del_vel_N, del_vel_E);
+	kalman.predict(del_vel_N, del_vel_E, d_vel_var * velocity_variance, d_ang_var * yaw_variance);
 
 	Covariance P{kalman.p()};
 	constrain(P);
