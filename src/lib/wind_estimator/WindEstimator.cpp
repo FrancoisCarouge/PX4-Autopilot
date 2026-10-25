@@ -152,7 +152,7 @@ WindEstimator::correct(const matrix::Matrix<float, 1, 3> &H, const matrix::Matri
 	_state = State{_state + k *fcarouge_px4::ColumnVector<float, Observation> {innov}};
 
 	// update covariance matrix
-	_P = Covariance{_P - k *h * _P};
+	_P = Covariance{_P - k *(h * _P)};
 }
 
 void
