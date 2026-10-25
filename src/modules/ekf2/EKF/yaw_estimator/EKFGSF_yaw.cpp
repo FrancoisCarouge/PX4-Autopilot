@@ -121,7 +121,6 @@ auto makeFilter()
 				return State{x.at<0>() + del_vel_N, x.at<1>() + del_vel_E, x.at<2>()};
 			}},
 		observation{[](const State & x) -> Output { return Output{x.at<0>(), x.at<1>()}; }},
-		update_types<>,
 		prediction_types<Velocity, Velocity>};
 }
 
