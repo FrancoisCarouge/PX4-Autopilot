@@ -134,7 +134,9 @@ auto makeFilter()
 				return State{x.at<0>() + del_vel_N, x.at<1>() + del_vel_E, x.at<2>()};
 			}},
 		observation{[](const State & x) -> Output { return Output{x.at<0>(), x.at<1>()}; }},
-		prediction_types<Velocity, Velocity, VelocityVariance, AngleVariance>};
+		prediction_types<Velocity, Velocity, VelocityVariance, AngleVariance>,
+		// the covariance corrected as P - K H P, as the original
+		simple_form};
 }
 
 // copy the upper half of the covariance matrix to the lower half and constrain the variances
