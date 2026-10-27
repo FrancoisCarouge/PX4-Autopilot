@@ -124,7 +124,9 @@ inline auto makeFilter()
 			[](const Thrust & hover_thrust, const Thrust & thrust) -> Acceleration {
 				return predictedAccZ(hover_thrust, thrust);
 			}},
-		update_types<Thrust>};
+		update_types<Thrust>,
+		// the variance corrected as (1 - K H) P, as the original
+		simple_form};
 }
 
 } // namespace zero_order_hover_thrust_ekf
