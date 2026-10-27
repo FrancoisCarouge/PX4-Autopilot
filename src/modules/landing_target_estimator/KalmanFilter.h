@@ -126,7 +126,9 @@ inline auto makeFilter()
 		input_control{[](const Seconds & dt, const AccelerationVariance &) -> InputControl {
 				return inputControl(dt);
 			}},
-		prediction_types<Seconds, AccelerationVariance>};
+		prediction_types<Seconds, AccelerationVariance>,
+		// the covariance corrected as (I - K H) P, as the original
+		simple_form};
 }
 } // namespace typed
 
