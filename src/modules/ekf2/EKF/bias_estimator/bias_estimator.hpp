@@ -44,6 +44,10 @@
  * During the measurment update step, the Normalized Innovation Squared (NIS) is checked
  * and the measurement is rejected if larger than the gate size.
  *
+ * The prediction and the update run on a typed Kalman filter of the bias in
+ * metres, defined in bias_estimator.cpp and held in storage of its size, so
+ * that the libraries stay out of this header, which EKF2 includes widely.
+ *
  * @author Mathieu Bresciani 	<mathieu@auterion.com>
  */
 
@@ -67,13 +71,15 @@ public:
 
 	BiasEstimator();
 	BiasEstimator(float state_init, float state_var_init);
+	BiasEstimator(const BiasEstimator &other);
+	BiasEstimator &operator=(const BiasEstimator &other);
 
 	virtual ~BiasEstimator() = default;
 
 	void reset()
 	{
-		_state = 0.f;
-		_state_var = 0.f;
+		setBias(0.f);
+		setBiasVar(0.f);
 		_signed_innov_test_ratio_lpf.reset(0.f);
 		_time_since_last_negative_innov = 0.f;
 		_time_since_last_positive_innov = 0.f;
@@ -82,26 +88,24 @@ public:
 	virtual void predict(float dt);
 	virtual void fuseBias(float measurement, float measurement_var);
 
-	void setBias(float bias) { _state = bias; }
+	void setBias(float bias);
 	void setProcessNoiseSpectralDensity(float nsd)
 	{
 		_process_psd = nsd * nsd;
 	}
-	void setBiasStdDev(float state_noise) { _state_var = state_noise * state_noise; }
+	void setBiasStdDev(float state_noise) { setBiasVar(state_noise * state_noise); }
 	void setInnovGate(float gate_size) { _gate_size = gate_size; }
 
 	void setMaxStateNoise(float max_noise) { _state_var_max = math::max(sq(0.01f), max_noise * max_noise); }
 
-	float getBias() const { return _state; }
-	float getBiasVar() const { return _state_var; }
+	float getBias() const;
+	float getBiasVar() const;
 	const status &getStatus() const { return _status; }
 
 private:
-	float _state{0.f};
 	float _dt{0.01f};
 
 	float _gate_size{3.f}; ///< Used for innovation filtering (innovation test ratio)
-	float _state_var{0.1f}; ///< Initial state uncertainty variance (m^2)
 	float _process_psd{1.25e-6f}; ///< State process power spectral density (m^2/s^2/Hz)
 	float _state_var_max{2.f}; ///< Used to constrain the state variance (m^2)
 
@@ -112,8 +116,20 @@ private:
 
 	status _status{};
 
+	// The Kalman filter of the bias: its state and variance, initially 0 m and
+	// 0.1 m^2. Defined in bias_estimator.cpp and held in this storage, which
+	// copies it as its trivial copy constructor does.
+	struct Filter;
+	static constexpr size_t kFilterSize{32};
+	struct alignas(float) FilterStorage {
+		unsigned char bytes[kFilterSize];
+	} _filter_storage{};
+
+	Filter &filter();
+	const Filter &filter() const;
+
+	void setBiasVar(float bias_var);
 	void constrainStateVar();
-	float computeKalmanGain(float innov_var) const;
 
 	/*
 	 * Compute the ratio between the Normalized Innovation Squared (NIS)
@@ -123,8 +139,6 @@ private:
 	float computeInnovTestRatio(float innov, float innov_var) const;
 	bool isTestRatioPassing(float innov_test_ratio) const;
 
-	void updateState(float K, float innov);
-	void updateStateCovariance(float K);
 
 	void updateOffsetDetection(float innov, float innov_test_ratio);
 	bool isOffsetDetected() const;
