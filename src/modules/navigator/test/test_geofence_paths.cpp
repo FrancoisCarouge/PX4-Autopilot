@@ -399,7 +399,7 @@ TEST_F(GeofenceTest, NonFinitePathRejectsWholeBatch)
 {
 	ASSERT_TRUE(loadFence(exclusionSquare()));
 	Geofence::PathCheck paths[] {path({100.f, 100.f}, {100.f, 500.f}), path({0.f, 100.f}, {0.f, 500.f})};
-	paths[1].end(0) = NAN;
+	paths[1].end(0) = static_cast<double>(NAN);
 	bool clear[2] {true, true};
 	EXPECT_FALSE(_fence.checkPathBatch(paths, 2, clear));
 	EXPECT_FALSE(clear[0]);
@@ -758,7 +758,7 @@ TEST_P(InvalidGeofenceLoadTest, RejectsFenceWhenLoading)
 		break;
 
 	case InvalidFenceItem::NonFiniteVertex:
-		points[2].lon = NAN;
+		points[2].lon = static_cast<double>(NAN);
 		break;
 
 	case InvalidFenceItem::LocalFrame:
