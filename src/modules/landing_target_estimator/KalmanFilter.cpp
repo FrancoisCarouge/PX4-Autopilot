@@ -30,124 +30,79 @@
  * POSSIBILITY OF SUCH DAMAGE.
  *
  ****************************************************************************/
-
 /*
  * @file KalmanFilter.cpp
- * Simple Kalman Filter for variable gain low-passing
  *
  * @author Nicolas de Palezieux (Sunflower Labs) <ndepal@gmail.com>
- *
  */
 
 #include "KalmanFilter.h"
 
 namespace landing_target_estimator
 {
-KalmanFilter::KalmanFilter(matrix::Vector<float, 2> &initial, matrix::Matrix<float, 2, 2> &covInit)
+
+using px4_typed_linear_algebra::Element;
+
+KalmanFilter::Transition KalmanFilter::propagation::operator()(const Input &, const Time &dt,
+		const AccelerationVariance &) const
 {
-	init(initial, covInit);
+	Transition A{};
+	A.at<0, 0>(1.f * Element<Transition, 0, 0>::reference);
+	A.at<1, 1>(1.f * Element<Transition, 1, 1>::reference);
+	A.at<0, 1>(dt);
+	return A;
 }
 
-void KalmanFilter::init(matrix::Vector<float, 2> &initial, matrix::Matrix<float, 2, 2> &covInit)
+KalmanFilter::InputControl KalmanFilter::noise_model::operator()(const Time &dt, const AccelerationVariance &) const
 {
-	_x = initial;
-	_covariance = covInit;
+	InputControl G{};
+	G.at<0>(dt * dt / 2);
+	G.at<1>(dt);
+	return G;
 }
 
-void KalmanFilter::init(float initial0, float initial1, float covInit00, float covInit11)
+KalmanFilter::Covariance KalmanFilter::process_noise::operator()(const State &, const Time &dt,
+		const AccelerationVariance &acc_unc) const
 {
-	matrix::Vector<float, 2> initial;
-	initial(0) = initial0;
-	initial(1) = initial1;
-	matrix::Matrix<float, 2, 2> covInit;
-	covInit(0, 0) = covInit00;
-	covInit(1, 1) = covInit11;
-
-	init(initial, covInit);
+	const InputControl G{noise_model{}(dt, acc_unc)};
+	return Covariance{G * fcarouge::transposed(G) * acc_unc};
 }
 
-void KalmanFilter::predict(float dt, float acc, float acc_unc)
+void KalmanFilter::init(Length position, Speed velocity, PositionVariance position_var, VelocityVariance velocity_var)
 {
-	_x(0) += _x(1) * dt + dt * dt / 2 * acc;
-	_x(1) += acc * dt;
-
-	matrix::Matrix<float, 2, 2> A; // propagation matrix
-	A(0, 0) = 1;
-	A(1, 1) = 1;
-	A(0, 1) = dt;
-
-	matrix::Matrix<float, 2, 1> G; // noise model
-	G(0, 0) = dt * dt / 2;
-	G(1, 0) = dt;
-
-	matrix::Matrix<float, 2, 2> process_noise = G * G.transpose() * acc_unc;
-
-	_covariance = A * _covariance * A.transpose() + process_noise;
+	_filter.x(State{position, velocity});
+	Covariance covInit{};
+	covInit.at<0, 0>(position_var);
+	covInit.at<1, 1>(velocity_var);
+	_filter.p(covInit);
 }
 
-bool KalmanFilter::update(float meas, float measUnc)
+void KalmanFilter::predict(Time dt, Acceleration acc, AccelerationVariance acc_unc)
 {
+	// x = A x + G acc, P = A P A^T + G G^T acc_unc
+	_filter.predict(dt, acc_unc, Input{acc});
+}
 
+bool KalmanFilter::update(Length meas, PositionVariance measUnc)
+{
 	// H = [1, 0]
-	_residual = meas - _x(0);
+	_residual = meas - _filter.x().at<0>();
 
 	// H * P * H^T simply selects P(0,0)
-	_innovCov = _covariance(0, 0) + measUnc;
+	_innovCov = _filter.p().at<0, 0>() + measUnc;
 
 	// outlier rejection
-	float beta = _residual / _innovCov * _residual;
+	const auto beta = _residual / _innovCov * _residual;
 
 	// 5% false alarm probability
-	if (beta > 3.84f) {
+	if (beta > 3.84f * mp_units::one) {
 		return false;
 	}
 
-	matrix::Vector<float, 2> kalmanGain;
-	kalmanGain(0) = _covariance(0, 0);
-	kalmanGain(1) = _covariance(1, 0);
-	kalmanGain /= _innovCov;
-
-	_x += kalmanGain * _residual;
-
-	matrix::Matrix<float, 2, 2> identity;
-	identity.identity();
-
-	matrix::Matrix<float, 2, 2> KH; // kalmanGain * H
-	KH(0, 0) = kalmanGain(0);
-	KH(1, 0) = kalmanGain(1);
-
-	_covariance = (identity - KH) * _covariance;
-
+	// K = P H^T / S, x += K y, P = (I - K H) P
+	_filter.r(measUnc);
+	_filter.update(meas);
 	return true;
-
-}
-
-void KalmanFilter::getState(matrix::Vector<float, 2> &state)
-{
-	state = _x;
-}
-
-void KalmanFilter::getState(float &state0, float &state1)
-{
-	state0 = _x(0);
-	state1 = _x(1);
-}
-
-void KalmanFilter::getCovariance(matrix::Matrix<float, 2, 2> &covariance)
-{
-	covariance = _covariance;
-}
-
-void KalmanFilter::getCovariance(float &cov00, float &cov11)
-{
-	cov00 = _covariance(0, 0);
-	cov11 = _covariance(1, 1);
-}
-
-void KalmanFilter::getInnovations(float &innov, float &innovCov)
-{
-	innov = _residual;
-	innovCov = _innovCov;
 }
 
 } // namespace landing_target_estimator

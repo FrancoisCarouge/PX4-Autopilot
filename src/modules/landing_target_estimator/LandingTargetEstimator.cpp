@@ -50,6 +50,9 @@
 namespace landing_target_estimator
 {
 
+using mp_units::si::metre;
+using mp_units::si::second;
+
 LandingTargetEstimator::LandingTargetEstimator()
 {
 	_paramHandle.acc_unc = param_find("LTEST_ACC_UNC");
@@ -93,8 +96,9 @@ void LandingTargetEstimator::update()
 				a.zero();
 			}
 
-			_kalman_filter_x.predict(dt, -a(0), _params.acc_unc);
-			_kalman_filter_y.predict(dt, -a(1), _params.acc_unc);
+			const KalmanFilter::AccelerationVariance acc_unc{_params.acc_unc * KalmanFilter::AccelerationVariance::reference};
+			_kalman_filter_x.predict(dt * second, -a(0) * (metre / second / second), acc_unc);
+			_kalman_filter_y.predict(dt * second, -a(1) * (metre / second / second), acc_unc);
 
 			_last_predict = hrt_absolute_time();
 		}
@@ -113,8 +117,10 @@ void LandingTargetEstimator::update()
 		float vx_init = _vehicleLocalPosition.v_xy_valid ? -_vehicleLocalPosition.vx : 0.f;
 		float vy_init = _vehicleLocalPosition.v_xy_valid ? -_vehicleLocalPosition.vy : 0.f;
 		PX4_INFO("Init %.2f %.2f", (double)vx_init, (double)vy_init);
-		_kalman_filter_x.init(_target_position_report.rel_pos_x, vx_init, _params.pos_unc_init, _params.vel_unc_init);
-		_kalman_filter_y.init(_target_position_report.rel_pos_y, vy_init, _params.pos_unc_init, _params.vel_unc_init);
+		const KalmanFilter::PositionVariance pos_unc_init{_params.pos_unc_init * KalmanFilter::PositionVariance::reference};
+		const KalmanFilter::VelocityVariance vel_unc_init{_params.vel_unc_init * KalmanFilter::VelocityVariance::reference};
+		_kalman_filter_x.init(_target_position_report.rel_pos_x * metre, vx_init * (metre / second), pos_unc_init, vel_unc_init);
+		_kalman_filter_y.init(_target_position_report.rel_pos_y * metre, vy_init * (metre / second), pos_unc_init, vel_unc_init);
 
 		_estimator_initialized = true;
 		_last_update = hrt_absolute_time();
@@ -122,9 +128,9 @@ void LandingTargetEstimator::update()
 
 	} else {
 		// update
-		const float measurement_uncertainty = _params.meas_unc * _dist_z * _dist_z;
-		bool update_x = _kalman_filter_x.update(_target_position_report.rel_pos_x, measurement_uncertainty);
-		bool update_y = _kalman_filter_y.update(_target_position_report.rel_pos_y, measurement_uncertainty);
+		const KalmanFilter::PositionVariance measurement_uncertainty{_params.meas_unc * _dist_z * _dist_z * KalmanFilter::PositionVariance::reference};
+		bool update_x = _kalman_filter_x.update(_target_position_report.rel_pos_x * metre, measurement_uncertainty);
+		bool update_y = _kalman_filter_y.update(_target_position_report.rel_pos_y * metre, measurement_uncertainty);
 
 		if (!update_x || !update_y) {
 			if (!_faulty) {
@@ -141,12 +147,15 @@ void LandingTargetEstimator::update()
 
 			_target_pose.timestamp = _target_position_report.timestamp;
 
-			float x, xvel, y, yvel, covx, covx_v, covy, covy_v;
-			_kalman_filter_x.getState(x, xvel);
-			_kalman_filter_x.getCovariance(covx, covx_v);
+			const float x = _kalman_filter_x.position().numerical_value_in(metre);
+			const float xvel = _kalman_filter_x.velocity().numerical_value_in(metre / second);
+			const float covx = _kalman_filter_x.position_variance().numerical_value_in(metre * metre);
+			const float covx_v = _kalman_filter_x.velocity_variance().numerical_value_in(metre * metre / second / second);
 
-			_kalman_filter_y.getState(y, yvel);
-			_kalman_filter_y.getCovariance(covy, covy_v);
+			const float y = _kalman_filter_y.position().numerical_value_in(metre);
+			const float yvel = _kalman_filter_y.velocity().numerical_value_in(metre / second);
+			const float covy = _kalman_filter_y.position_variance().numerical_value_in(metre * metre);
+			const float covy_v = _kalman_filter_y.velocity_variance().numerical_value_in(metre * metre / second / second);
 
 			_target_pose.is_static = (_params.mode == TargetMode::Stationary);
 
@@ -181,9 +190,10 @@ void LandingTargetEstimator::update()
 			_last_predict = _last_update;
 		}
 
-		float innov_x, innov_cov_x, innov_y, innov_cov_y;
-		_kalman_filter_x.getInnovations(innov_x, innov_cov_x);
-		_kalman_filter_y.getInnovations(innov_y, innov_cov_y);
+		const float innov_x = _kalman_filter_x.innovation().numerical_value_in(metre);
+		const float innov_cov_x = _kalman_filter_x.innovation_variance().numerical_value_in(metre * metre);
+		const float innov_y = _kalman_filter_y.innovation().numerical_value_in(metre);
+		const float innov_cov_y = _kalman_filter_y.innovation_variance().numerical_value_in(metre * metre);
 
 		_target_innovations.timestamp = _target_position_report.timestamp;
 		_target_innovations.innov_x = innov_x;

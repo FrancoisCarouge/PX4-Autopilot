@@ -30,121 +30,126 @@
  * POSSIBILITY OF SUCH DAMAGE.
  *
  ****************************************************************************/
-
 /*
  * @file KalmanFilter.h
  * Simple Kalman Filter for variable gain low-passing
  *
  * Constant velocity model. Prediction according to
- * x_{k+1} = A * x_{k}
- * with A = [1 dt; 0 1]
+ * x_{k+1} = A * x_{k} + G * acc
+ * with A = [1 dt; 0 1], G = [dt^2/2; dt]
  *
  * Update with a direct measurement of the first state:
  * H = [1 0]
+ *
+ * A typed Kalman filter: the position in metres, the velocity in metres per
+ * second, every covariance element in its own unit.
  *
  * @author Nicolas de Palezieux (Sunflower Labs) <ndepal@gmail.com>
  *
  */
 
-#include <matrix/math.hpp>
-#include <mathlib/mathlib.h>
-#include <matrix/Matrix.hpp>
-#include <matrix/Vector.hpp>
-
 #pragma once
+
+#include <px4_typed_linear_algebra.hpp>
 
 namespace landing_target_estimator
 {
+
 class KalmanFilter
 {
 public:
-	/**
-	 * Default constructor, state not initialized
-	 */
-	KalmanFilter() {};
+	using Time = px4_typed_linear_algebra::Time;
+	using Length = px4_typed_linear_algebra::Length;
+	using Speed = px4_typed_linear_algebra::Speed;
+	using Acceleration = px4_typed_linear_algebra::Quantity<mp_units::si::metre / mp_units::si::second / mp_units::si::second>;
 
-	/**
-	 * Constructor, initialize state
-	 */
-	KalmanFilter(matrix::Vector<float, 2> &initial, matrix::Matrix<float, 2, 2> &covInit);
+	// The target: its position and velocity relative to the vehicle.
+	using State = px4_typed_linear_algebra::Vector<Length, Speed>;
+	using Covariance = px4_typed_linear_algebra::Matrix<State, State>;
+	// The relative acceleration.
+	using Input = px4_typed_linear_algebra::Vector<Acceleration>;
+	// The measured relative position.
+	using Output = px4_typed_linear_algebra::Vector<Length>;
+	using OutputVariance = px4_typed_linear_algebra::Matrix<Output, Output>;
 
-	/**
-	 * Default desctructor
-	 */
-	virtual ~KalmanFilter() {};
+	// The variances of the position [m²], of the velocity [(m/s)²], and of the
+	// acceleration [(m/s²)²].
+	using PositionVariance = px4_typed_linear_algebra::Element<Covariance, 0, 0>;
+	using VelocityVariance = px4_typed_linear_algebra::Element<Covariance, 1, 1>;
+	using AccelerationVariance = decltype(Acceleration{} * Acceleration{});
 
-	/**
-	 * Initialize filter state
-	 * @param initial initial state
-	 * @param covInit initial covariance
-	 */
-	void init(matrix::Vector<float, 2> &initial, matrix::Matrix<float, 2, 2> &covInit);
+	using Transition = fcarouge::kalman_filter::internal::evaluate <
+			   fcarouge::kalman_filter::internal::quotient<State, State >>;
+	using InputControl = fcarouge::kalman_filter::internal::evaluate <
+			     fcarouge::kalman_filter::internal::quotient<State, Input >>;
+
+	// A = [1 dt; 0 1]
+	struct propagation {
+		Transition operator()(const Input &acc, const Time &dt, const AccelerationVariance &acc_unc) const;
+	};
+
+	// G = [dt^2/2; dt]
+	struct noise_model {
+		InputControl operator()(const Time &dt, const AccelerationVariance &acc_unc) const;
+	};
+
+	// Q = G * G^T * acc_unc
+	struct process_noise {
+		Covariance operator()(const State &x, const Time &dt, const AccelerationVariance &acc_unc) const;
+	};
+
+	// H = [1 0]: the filter's default output model, the first row of the
+	// identity.
+	using Filter = decltype(fcarouge::kalman{
+		fcarouge::state{State{}}, fcarouge::output<Output>, fcarouge::input<Input>,
+		fcarouge::estimate_uncertainty{Covariance{}}, fcarouge::process_uncertainty{process_noise{}},
+		fcarouge::output_uncertainty{OutputVariance{}},
+		fcarouge::state_transition{propagation{}}, fcarouge::input_control{noise_model{}},
+		fcarouge::prediction_types<Time, AccelerationVariance>, fcarouge::simple_form});
 
 	/**
 	 * Initialize filter state, only specifying diagonal covariance elements
-	 * @param initial0  first initial state
-	 * @param initial1  second initial state
-	 * @param covInit00 initial variance of first state
-	 * @param covinit11 initial variance of second state
+	 * @param position     initial position
+	 * @param velocity     initial velocity
+	 * @param position_var initial variance of the position
+	 * @param velocity_var initial variance of the velocity
 	 */
-	void init(float initial0, float initial1, float covInit00, float covInit11);
+	void init(Length position, Speed velocity, PositionVariance position_var, VelocityVariance velocity_var);
 
 	/**
 	 * Predict the state with an external acceleration estimate
-	 * @param dt            Time delta in seconds since last state change
+	 * @param dt            Time delta since last state change
 	 * @param acc           Acceleration estimate
 	 * @param acc_unc       Variance of acceleration estimate
 	 */
-	void predict(float dt, float acc, float acc_unc);
+	void predict(Time dt, Acceleration acc, AccelerationVariance acc_unc);
 
 	/**
 	 * Update the state estimate with a measurement
-	 * @param meas    state measeasurement
-	 * @param measUnc measurement uncertainty
+	 * @param meas    position measurement
+	 * @param measUnc measurement variance
 	 * @return update success (measurement not rejected)
 	 */
-	bool update(float meas, float measUnc);
+	bool update(Length meas, PositionVariance measUnc);
 
-	/**
-	 * Get the current filter state
-	 * @param x1 State
-	 */
-	void getState(matrix::Vector<float, 2> &state);
+	Length position() const { return _filter.x().at<0>(); }
+	Speed velocity() const { return _filter.x().at<1>(); }
+	PositionVariance position_variance() const { return _filter.p().at<0, 0>(); }
+	VelocityVariance velocity_variance() const { return _filter.p().at<1, 1>(); }
 
-	/**
-	 * Get the current filter state
-	 * @param state0 First state
-	 * @param state1 Second state
-	 */
-	void getState(float &state0, float &state1);
-
-	/**
-	 * Get state covariance
-	 * @param covariance Covariance of the state
-	 */
-	void getCovariance(matrix::Matrix<float, 2, 2> &covariance);
-
-	/**
-	 * Get state variances (diagonal elements)
-	 * @param cov00 Variance of first state
-	 * @param cov11 Variance of second state
-	 */
-	void getCovariance(float &cov00, float &cov11);
-
-	/**
-	 * Get measurement innovation and covariance of last update call
-	 * @param innov Measurement innovation
-	 * @param innovCov Measurement innovation covariance
-	 */
-	void getInnovations(float &innov, float &innovCov);
+	// The measurement innovation and its variance of the last update call.
+	Length innovation() const { return _residual; }
+	PositionVariance innovation_variance() const { return _innovCov; }
 
 private:
-	matrix::Vector<float, 2> _x; // state
-
-	matrix::Matrix<float, 2, 2> _covariance; // state covariance
-
-	float _residual{0.0f}; // residual of last measurement update
-
-	float _innovCov{0.0f}; // innovation covariance of last measurement update
+	Filter _filter{
+		fcarouge::state{State{}}, fcarouge::output<Output>, fcarouge::input<Input>,
+		fcarouge::estimate_uncertainty{Covariance{}}, fcarouge::process_uncertainty{process_noise{}},
+		fcarouge::output_uncertainty{OutputVariance{}},
+		fcarouge::state_transition{propagation{}}, fcarouge::input_control{noise_model{}},
+		fcarouge::prediction_types<Time, AccelerationVariance>, fcarouge::simple_form};
+	Length _residual{}; // residual of last measurement update
+	PositionVariance _innovCov{}; // innovation covariance of last measurement update
 };
+
 } // namespace landing_target_estimator
