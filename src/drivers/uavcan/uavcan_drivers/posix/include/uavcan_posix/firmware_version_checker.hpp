@@ -46,7 +46,7 @@ class FirmwareVersionChecker : public uavcan::IFirmwareVersionChecker
 	/**
 	 * Maximum length of full path including / the file name
 	 */
-	enum { MaxPathLength = uavcan::protocol::file::Path::FieldTypes::path::MaxSize + MaxBasePathLength };
+	enum { MaxPathLength = unsigned(uavcan::protocol::file::Path::FieldTypes::path::MaxSize) + unsigned(MaxBasePathLength) };
 
 	/**
 	 * This type is used internally for the full path to file
