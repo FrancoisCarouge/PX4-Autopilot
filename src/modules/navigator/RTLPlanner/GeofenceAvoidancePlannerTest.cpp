@@ -273,7 +273,7 @@ TEST_F(GeofenceAvoidancePlannerTest, PathAroundMaximumVertexPolygon)
 	matrix::Vector2d vertices[DM_KEY_FENCE_POINTS_MAX];
 
 	for (int i = 0; i < DM_KEY_FENCE_POINTS_MAX; ++i) {
-		const double angle = 2.0 * M_PI * i / DM_KEY_FENCE_POINTS_MAX;
+		const double angle = 2.0 * M_PI * i / static_cast<double>(DM_KEY_FENCE_POINTS_MAX);
 		vertices[i] = center + matrix::Vector2d{radius_degrees * cos(angle), radius_degrees * sin(angle)};
 	}
 
