@@ -39,3 +39,4 @@ add_library(bias_estimator
 )
 
 add_dependencies(bias_estimator prebuild_targets)
+target_link_libraries(bias_estimator PRIVATE fcarouge)
