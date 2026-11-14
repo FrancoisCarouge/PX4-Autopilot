@@ -40,12 +40,14 @@
 #include "zero_order_hover_thrust_ekf.hpp"
 
 using matrix::sign;
+using namespace zero_order_hover_thrust_ekf;
 
 void ZeroOrderHoverThrustEkf::predict(const float dt)
 {
 	// State is constant
-	// Predict state covariance only
-	_state_var += _process_var * dt * dt;
+	// Predict state covariance only: P = P + Q
+	_filter.q(_process_var * dt * dt * mp_units::one);
+	_filter.predict();
 	_dt = dt;
 }
 
@@ -54,14 +56,12 @@ void ZeroOrderHoverThrustEkf::fuseAccZ(const float acc_z, const float thrust)
 	const float H = computeH(thrust);
 	const float innov_var = computeInnovVar(H);
 	const float innov = computeInnov(acc_z, thrust);
-	const float K = computeKalmanGain(H, innov_var);
 	const float innov_test_ratio = computeInnovTestRatio(innov, innov_var);
 
 	float residual = innov;
 
 	if (isTestRatioPassing(innov_test_ratio)) {
-		updateState(K, innov);
-		updateStateCovariance(K, H);
+		update(acc_z, thrust);
 		residual = computeInnov(acc_z, thrust); // residual != innovation since the hover thrust changed
 
 	} else if (isLargeOffsetDetected()) {
@@ -83,13 +83,13 @@ void ZeroOrderHoverThrustEkf::fuseAccZ(const float acc_z, const float thrust)
 
 inline float ZeroOrderHoverThrustEkf::computeH(const float thrust) const
 {
-	return -CONSTANTS_ONE_G * thrust / (_hover_thr * _hover_thr);
+	return observation_jacobian{}(_filter.x(), thrust * mp_units::one).numerical_value_in(AccelerationPerThrust::unit);
 }
 
 inline float ZeroOrderHoverThrustEkf::computeInnovVar(const float H) const
 {
 	const float R = _acc_var * _acc_var_scale;
-	const float P = _state_var;
+	const float P = getHoverThrustEstimateVar();
 	return math::max(H * P * H + R, R);
 }
 
@@ -101,12 +101,7 @@ float ZeroOrderHoverThrustEkf::computeInnov(const float acc_z, const float thrus
 
 float ZeroOrderHoverThrustEkf::computePredictedAccZ(const float thrust) const
 {
-	return CONSTANTS_ONE_G * thrust / _hover_thr - CONSTANTS_ONE_G;
-}
-
-inline float ZeroOrderHoverThrustEkf::computeKalmanGain(const float H, const float innov_var) const
-{
-	return _state_var * H / innov_var;
+	return predicted_acc_z{}(_filter.x(), thrust * mp_units::one).numerical_value_in(metre_per_second_squared);
 }
 
 inline float ZeroOrderHoverThrustEkf::computeInnovTestRatio(const float innov, const float innov_var) const
@@ -119,14 +114,13 @@ inline bool ZeroOrderHoverThrustEkf::isTestRatioPassing(const float innov_test_r
 	return innov_test_ratio < 1.f;
 }
 
-inline void ZeroOrderHoverThrustEkf::updateState(const float K, const float innov)
+inline void ZeroOrderHoverThrustEkf::update(const float acc_z, const float thrust)
 {
-	_hover_thr = math::constrain(_hover_thr + K * innov, _hover_thr_min, _hover_thr_max);
-}
-
-inline void ZeroOrderHoverThrustEkf::updateStateCovariance(const float K, const float H)
-{
-	_state_var = math::constrain((1.f - K * H) * _state_var, 1e-10f, 1.f);
+	// K = P H / (H P H + R), Th += K (z - h), P = (1 - K H) P
+	_filter.r(_acc_var * _acc_var_scale * AccelerationVariance::reference);
+	_filter.update(thrust * mp_units::one, acc_z * metre_per_second_squared);
+	_filter.x(math::constrain(getHoverThrustEstimate(), _hover_thr_min, _hover_thr_max) * mp_units::one);
+	_filter.p(math::constrain(getHoverThrustEstimateVar(), 1e-10f, 1.f) * mp_units::one);
 }
 
 inline bool ZeroOrderHoverThrustEkf::isLargeOffsetDetected() const
@@ -136,7 +130,7 @@ inline bool ZeroOrderHoverThrustEkf::isLargeOffsetDetected() const
 
 inline void ZeroOrderHoverThrustEkf::bumpStateVariance()
 {
-	_state_var += 1e3f * _process_var * _dt * _dt;
+	_filter.p(_filter.p() + 1e3f * _process_var * _dt * _dt * mp_units::one);
 }
 
 inline void ZeroOrderHoverThrustEkf::updateLpf(const float residual, const float signed_innov_test_ratio)
@@ -151,6 +145,6 @@ inline void ZeroOrderHoverThrustEkf::updateMeasurementNoise(const float residual
 {
 	const float alpha = _dt / (_noise_learning_time_constant + _dt);
 	const float res_no_bias = residual - _residual_lpf;
-	const float P = _state_var;
+	const float P = getHoverThrustEstimateVar();
 	_acc_var = math::constrain((1.f - alpha) * _acc_var  + alpha * (res_no_bias * res_no_bias + H * P * H), 1.f, 400.f);
 }

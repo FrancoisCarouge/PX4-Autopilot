@@ -35,6 +35,7 @@ px4_add_library(zero_order_hover_thrust_ekf
 	zero_order_hover_thrust_ekf.cpp
 	zero_order_hover_thrust_ekf.hpp
 )
+target_link_libraries(zero_order_hover_thrust_ekf PUBLIC fcarouge)
 
 px4_add_module(
 	MODULE modules__mc_hover_thrust_estimator
