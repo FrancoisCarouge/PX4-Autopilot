@@ -19,6 +19,10 @@ exec find boards msg src platforms test \
     -path src/drivers/uavcan/uavcan_drivers/kinetis/driver/include/uavcan_kinetis -prune -o \
     -path src/drivers/cyphal/libcanard -prune -o \
     -path src/lib/crypto/monocypher -prune -o \
+    -path src/lib/fcarouge/Kalman -prune -o \
+    -path src/lib/fcarouge/SparseLinearAlgebra -prune -o \
+    -path src/lib/fcarouge/TypedLinearAlgebra -prune -o \
+    -path src/lib/fcarouge/mp-units -prune -o \
     -path src/lib/events/libevents -prune -o \
     -path src/lib/parameters/uthash -prune -o \
     -path src/lib/rl_tools/rl_tools -prune -o \
@@ -31,6 +35,10 @@ exec find boards msg src platforms test \
     -path src/modules/simulation/gz_plugins/optical_flow/PX4-OpticalFlow -prune -o \
     -path test/fuzztest -prune -o \
     -path src/lib/crypto/monocypher -prune -o \
+    -path src/lib/fcarouge/Kalman -prune -o \
+    -path src/lib/fcarouge/SparseLinearAlgebra -prune -o \
+    -path src/lib/fcarouge/TypedLinearAlgebra -prune -o \
+    -path src/lib/fcarouge/mp-units -prune -o \
     -path src/lib/crypto/libtomcrypt -prune -o \
     -path src/lib/crypto/libtommath -prune -o \
     -path src/lib/heatshrink/heatshrink -prune -o \
