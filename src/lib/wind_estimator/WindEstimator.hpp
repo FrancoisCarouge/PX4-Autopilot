@@ -43,11 +43,44 @@
 #include <mathlib/mathlib.h>
 #include <matrix/math.hpp>
 
+#include <px4_typed_linear_algebra.hpp>
+
 #include "python/generated/fuse_airspeed.h"
 #include "python/generated/fuse_beta.h"
 #include "python/generated/init_wind_using_airspeed.h"
 
 using namespace time_literals;
+
+namespace wind_estimator
+{
+using px4_typed_linear_algebra::Quantity;
+using px4_typed_linear_algebra::Speed;
+
+inline constexpr auto metre_per_second = mp_units::si::metre / mp_units::si::second;
+
+/// the true airspeed scale
+using Scale = Quantity<mp_units::one>;
+using Seconds = Quantity<mp_units::si::second>;
+using SpeedVariance = Quantity<metre_per_second *metre_per_second>;
+/// the wind process noise power spectral density, (m/s^2)^2/Hz
+using WindPsd = Quantity < metre_per_second * metre_per_second / mp_units::si::second >;
+/// the true airspeed scale process noise power spectral density, 1/s^2/Hz
+using ScalePsd = Quantity < mp_units::one / mp_units::si::second >;
+/// the sideslip, the ratio of the lateral to the longitudinal relative wind
+using Sideslip = Quantity<mp_units::si::radian>;
+using SideslipVariance = Quantity<mp_units::si::radian *mp_units::si::radian>;
+
+/// the wind north and east, and the true airspeed scale
+using State = px4_typed_linear_algebra::Vector<Speed, Speed, Scale>;
+using Covariance = px4_typed_linear_algebra::Matrix<State, State>;
+/// a scalar observation, its sensitivity to the state, and the gain of its correction
+template <typename Observation>
+using Jacobian = fcarouge::kalman_filter::internal::evaluate <
+		 fcarouge::kalman_filter::internal::quotient<px4_typed_linear_algebra::Vector<Observation>, State >>;
+template <typename Observation>
+using Gain = fcarouge::kalman_filter::internal::evaluate <
+	     fcarouge::kalman_filter::internal::quotient<State, px4_typed_linear_algebra::Vector<Observation> >>;
+} // namespace wind_estimator
 
 class WindEstimator
 {
@@ -72,33 +105,33 @@ public:
 
 	bool check_if_meas_is_rejected(float innov, float innov_var, uint8_t gate_size);
 
-	matrix::Vector2f get_wind() { return matrix::Vector2f{_state(INDEX_W_N), _state(INDEX_W_E)}; }
+	matrix::Vector2f get_wind()
+	{
+		using wind_estimator::metre_per_second;
+		return matrix::Vector2f{_state.at<INDEX_W_N>().numerical_value_in(metre_per_second), _state.at<INDEX_W_E>().numerical_value_in(metre_per_second)};
+	}
 
 	// invert scale (CAS = IAS * scale), protect agains division by 0, constrain to [0.1, 10]
-	float get_tas_scale() { return 1.f / math::constrain(_state(INDEX_TAS_SCALE), 0.1f, 10.0f); }
-	float get_tas_scale_var() { return _P(INDEX_TAS_SCALE, INDEX_TAS_SCALE); }
-	float get_tas_innov() { return _tas_innov; }
-	float get_tas_innov_var() { return _tas_innov_var; }
-	float get_beta_innov() { return _beta_innov; }
-	float get_beta_innov_var() { return _beta_innov_var; }
-	matrix::Vector2f  get_wind_var() { return matrix::Vector2f{_P(INDEX_W_N, INDEX_W_N), _P(INDEX_W_E, INDEX_W_E)}; }
+	float get_tas_scale() { return 1.f / math::constrain(_state.at<INDEX_TAS_SCALE>().numerical_value_in(mp_units::one), 0.1f, 10.0f); }
+	float get_tas_scale_var() { return _P.at<INDEX_TAS_SCALE, INDEX_TAS_SCALE>().numerical_value_in(mp_units::one); }
+	float get_tas_innov() { return _tas_innov.numerical_value_in(wind_estimator::metre_per_second); }
+	float get_tas_innov_var() { return _tas_innov_var.numerical_value_in(SpeedVariance::unit); }
+	float get_beta_innov() { return _beta_innov.numerical_value_in(mp_units::si::radian); }
+	float get_beta_innov_var() { return _beta_innov_var.numerical_value_in(SideslipVariance::unit); }
+	matrix::Vector2f get_wind_var()
+	{
+		return matrix::Vector2f{_P.at<INDEX_W_N, INDEX_W_N>().numerical_value_in(SpeedVariance::unit), _P.at<INDEX_W_E, INDEX_W_E>().numerical_value_in(SpeedVariance::unit)};
+	}
 	bool get_wind_estimator_reset() { return _wind_estimator_reset; }
 
 	// unaided, the state uncertainty (diagonal of sqrt(P)) grows by the process noise spectral density every second
-	void set_wind_process_noise_spectral_density(float wind_nsd) { _wind_psd = wind_nsd * wind_nsd; }
+	void set_wind_process_noise_spectral_density(float wind_nsd) { _wind_psd = wind_nsd * wind_nsd * WindPsd::reference; }
 
-	void set_tas_noise(float tas_sigma) { _tas_var = tas_sigma * tas_sigma; }
+	void set_tas_noise(float tas_sigma) { _tas_var = tas_sigma * tas_sigma * SpeedVariance::reference; }
 
-	void set_scale_init(float scale_init) {_scale_init = 1.f / math::constrain(scale_init, 0.1f, 10.f); }
+	void set_scale_init(float scale_init) {_scale_init = 1.f / math::constrain(scale_init, 0.1f, 10.f) * mp_units::one; }
 
-	void reset_scale_to_init()
-	{
-		_state(INDEX_TAS_SCALE) = _scale_init;
-		// a copy: a slice is a view of _P, which is zeroed next
-		const matrix::SquareMatrix<float, 2> P_wind = _P.slice<2, 2>(0, 0);
-		_P.setZero();
-		_P.slice<2, 2>(0, 0) = P_wind;
-	}
+	void reset_scale_to_init();
 
 private:
 	enum {
@@ -114,25 +147,35 @@ private:
 	static constexpr float kInitialHeadingErrorDeg =
 		10.0f; // heading uncertainty used to initialise the filter with a true airspeed measurement [deg]
 
-	matrix::Vector3f _state{0.f, 0.f, 1.f};
-	matrix::Matrix3f _P;		///< state covariance matrix
+	using Speed = wind_estimator::Speed;
+	using SpeedVariance = wind_estimator::SpeedVariance;
+	using Sideslip = wind_estimator::Sideslip;
+	using SideslipVariance = wind_estimator::SideslipVariance;
+	using WindPsd = wind_estimator::WindPsd;
+	using ScalePsd = wind_estimator::ScalePsd;
+	using Scale = wind_estimator::Scale;
+	using State = wind_estimator::State;
+	using Covariance = wind_estimator::Covariance;
 
-	float _tas_innov{0.0f};	///< true airspeed innovation
-	float _tas_innov_var{0.0f};	///< true airspeed innovation variance
+	State _state{0.f * wind_estimator::metre_per_second, 0.f * wind_estimator::metre_per_second, 1.f *mp_units::one};
+	Covariance _P{};		///< state covariance matrix
 
-	float _beta_innov{0.0f};	///< sideslip innovation
-	float _beta_innov_var{0.0f};	///< sideslip innovation variance
+	Speed _tas_innov{};	///< true airspeed innovation
+	SpeedVariance _tas_innov_var{};	///< true airspeed innovation variance
+
+	Sideslip _beta_innov{};	///< sideslip innovation
+	SideslipVariance _beta_innov_var{};	///< sideslip innovation variance
 
 	bool _initialised{false};	///< True: filter has been initialised
 
-	float _wind_psd{0.01f};	///< wind process noise power spectral density (m^2/s^4/Hz), (0.1 m/s^2/sqrt(Hz))^2
-	static constexpr float kTasScalePsd{1e-8f};	///< true airspeed scale process noise power spectral density (1/s^2/Hz), (0.0001 1/s/sqrt(Hz))^2
-	float _tas_var{1.96f};		///< true airspeed measurement noise variance (m/s)^2, (1.4 m/s)^2
-	static constexpr float kBetaVar{0.0225f};	///< sideslip measurement noise variance (rad)^2, (0.15 rad)^2
+	WindPsd _wind_psd{0.01f * WindPsd::reference};	///< wind process noise power spectral density (m^2/s^4/Hz), (0.1 m/s^2/sqrt(Hz))^2
+	static constexpr ScalePsd kTasScalePsd{1e-8f * ScalePsd::reference};	///< true airspeed scale process noise power spectral density (1/s^2/Hz), (0.0001 1/s/sqrt(Hz))^2
+	SpeedVariance _tas_var{1.96f * SpeedVariance::reference};		///< true airspeed measurement noise variance (m/s)^2, (1.4 m/s)^2
+	static constexpr SideslipVariance kBetaVar{0.0225f * SideslipVariance::reference};	///< sideslip measurement noise variance (rad)^2, (0.15 rad)^2
 	static constexpr uint8_t kTasGate{4};	///< airspeed fusion gate size (SD)
 	static constexpr uint8_t kBetaGate{1};	///< sideslip fusion gate size (SD)
 
-	float _scale_init{1.f};
+	Scale _scale_init{1.f * mp_units::one};
 
 	uint64_t _time_last_airspeed_fuse = 0;	///< timestamp of last airspeed fusion
 	uint64_t _time_last_beta_fuse = 0;	///< timestamp of last sideslip fusion
@@ -149,6 +192,11 @@ private:
 			const float tas_meas = NAN, const float tas_variance = NAN);
 
 	void run_sanity_checks();
+
+	/// the correction of a scalar observation by its generated Jacobian and gain:
+	/// x += K innov, P = P - K H P
+	template <typename Observation>
+	void correct(const matrix::Matrix<float, 1, 3> &H, const matrix::Matrix<float, 3, 1> &K, Observation innov);
 
 	// return the square of two floating point numbers
 	static constexpr float sq(float var) { return var * var; }
