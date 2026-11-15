@@ -59,7 +59,7 @@ public:
 	void updateFilters(float u, float y);
 	bool areFiltersInitialized() const { return _are_filters_initialized; }
 	void updateFitness();
-	const matrix::Vector<float, 5> &getCoefficients() const { return _rls.getCoefficients(); }
+	matrix::Vector<float, 5> getCoefficients() const { return _rls.getCoefficients(); }
 	const matrix::Vector<float, 5> getVariances() const { return _rls.getVariances(); }
 	const matrix::Vector<float, 5> &getDiffEstimate() const { return _rls.getDiffEstimate(); }
 	float getFitness() const { return _fitness_lpf.getState(); }
@@ -83,7 +83,8 @@ public:
 	float getFilteredOutputData() const { return _y_hpf; }
 
 private:
-	ArxRls<2, 2, 1> _rls;
+	// The angular rate [rad/s, the angle a ratio] over the normalized torque setpoint [-].
+	ArxRls < 2, 2, 1, arx_rls::Quantity < mp_units::one / mp_units::si::second >, arx_rls::Ratio > _rls;
 	math::LowPassFilter2p<float> _u_lpf{400.f, 30.f};
 	math::LowPassFilter2p<float> _y_lpf{400.f, 30.f};
 
