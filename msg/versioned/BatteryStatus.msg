@@ -75,4 +75,4 @@ float32 ocv_estimate_filtered # [V] Filtered open circuit voltage estimate
 float32 volt_based_soc_estimate # [-] [@range 0, 1] Normalized volt based state of charge estimate
 float32 voltage_prediction # [V] Predicted voltage
 float32 prediction_error # [V] Prediction error
-float32 estimation_covariance_norm # [-] Norm of the covariance matrix
+float32 estimation_covariance_norm # [1/A^2] Determinant of the internal resistance estimation's covariance, normalized by the voltage noise variance
