@@ -73,16 +73,12 @@ using Gain = tla::Vector<Ratio, tla::Quantity<per_ampere>>;
 // The parameters' covariance normalized by the voltage noise variance.
 using Covariance = tla::Matrix<Gain, Gain>;
 
-// The estimator's measure of its covariance, as upstream computes it: the
-// square root of the sum of the squared elements in 1, 1/A, and 1/A^2.
-// The terms are of different units, so that the measure depends on the unit
-// of current: it is computed on the numerical values in amperes, as before.
-float covarianceNorm(const Covariance &p)
+// The estimator's measure of its uncertainty, the determinant of its
+// covariance [1/A^2]: the area of its uncertainty ellipse, whatever the unit
+// of current. An update is accepted when it reduces it.
+float covarianceMeasure(const Covariance &p)
 {
-	const float p00 = p.at<0, 0>().numerical_value_in(mp_units::one);
-	const float p10 = p.at<1, 0>().numerical_value_in(per_ampere);
-	const float p11 = p.at<1, 1>().numerical_value_in(per_ampere_squared);
-	return sqrtf(powf(p00, 2.f) + 2.f * powf(p10, 2.f) + powf(p11, 2.f));
+	return (p.at<0, 0>() * p.at<1, 1>() - p.at<1, 0>() * p.at<0, 1>()).numerical_value_in(per_ampere_squared);
 }
 
 } // namespace
@@ -105,7 +101,7 @@ void Battery::initializeInternalResistanceEstimation(const float open_circuit_vo
 	e.covariance = Covariance{};
 	e.covariance.at<0, 0>(OCV_COVARIANCE * n_cells * mp_units::one);
 	e.covariance.at<1, 1>(R_COVARIANCE * n_cells * per_ampere_squared);
-	_estimation_covariance_norm = covarianceNorm(e.covariance);
+	_estimation_covariance_norm = covarianceMeasure(e.covariance);
 }
 
 Battery::Battery(int index, ModuleParams *parent, const int sample_interval_us, const uint8_t source) :
@@ -366,7 +362,7 @@ void Battery::updateInternalResistanceEstimation(const float voltage_v, const fl
 	const Gain gamma{e.covariance *x *(1.f / scale)};
 	const Parameters parameters_temp{e.parameters + gamma * error};
 	const Covariance covariance_temp{(e.covariance - gamma * (fcarouge::transposed(x) * e.covariance)) *(1.f / LAMBDA)};
-	const float covariance_temp_norm = covarianceNorm(covariance_temp);
+	const float covariance_temp_norm = covarianceMeasure(covariance_temp);
 
 	if (covariance_temp_norm < _estimation_covariance_norm) { // Only update if estimation improves
 		e.parameters = parameters_temp;

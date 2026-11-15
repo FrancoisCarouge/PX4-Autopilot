@@ -228,7 +228,7 @@ private:
 	Estimation &estimation();
 	void initializeInternalResistanceEstimation(float open_circuit_voltage_v);
 	bool _internal_resistance_initialized{false};
-	float _estimation_covariance_norm{0.f};
+	float _estimation_covariance_norm{0.f}; // [1/A^2] Determinant of the estimation's covariance
 	float _internal_resistance_estimate{0.005f}; // [Ohm] Per cell estimate of the internal resistance
 	float _voltage_prediction{0.f}; // [V] Predicted voltage of the estimator
 	float _prediction_error{0.f}; // [V] Error between the predicted and measured voltage
