@@ -57,11 +57,67 @@
 
 #pragma once
 
-#include <matrix/matrix/math.hpp>
+#include <cmath>
+#include <cstddef>
+#include <tuple>
+#include <type_traits>
+#include <utility>
 
-template<size_t N, size_t M, size_t D>
+#include <matrix/matrix/math.hpp>
+#include <px4_typed_linear_algebra.hpp>
+
+namespace arx_rls
+{
+
+template<auto Reference>
+using Quantity = px4_typed_linear_algebra::Quantity<Reference>;
+using Ratio = Quantity<mp_units::one>;
+
+template<std::size_t, typename Type>
+using Always = Type;
+
+// The typed column vector of N elements of A followed by K elements of B.
+template<typename A, typename B, std::size_t N, std::size_t K,
+	 typename = std::make_index_sequence<N>, typename = std::make_index_sequence<K>>
+struct split_vector;
+
+template<typename A, typename B, std::size_t N, std::size_t K, std::size_t... I, std::size_t... J>
+struct split_vector<A, B, N, K, std::index_sequence<I...>, std::index_sequence<J...>> {
+	using type = px4_typed_linear_algebra::Vector<Always<I, A>..., Always<J, B>...>;
+};
+
+template<typename A, typename B, std::size_t N, std::size_t K>
+using SplitVector = typename split_vector<A, B, N, K>::type;
+
+// Calls `function` with each index of [0, Count) as a compile-time constant.
+template<std::size_t Count, typename Function>
+constexpr void forEachIndex(Function &&function)
+{
+	[&]<std::size_t... Index>(std::index_sequence<Index...>) {
+		(function(std::integral_constant<std::size_t, Index> {}), ...);
+	}(std::make_index_sequence<Count> {});
+}
+
+} // namespace arx_rls
+
+// The output y and the input u are of the quantity types Output and Input:
+// the coefficients a_i are ratios, the b_i in Output per Input, and the
+// covariance of the coefficients, normalized by the variance of the output
+// noise, in their products per squared Output.
+template<size_t N, size_t M, size_t D, typename Output = arx_rls::Ratio, typename Input = arx_rls::Ratio>
 class ArxRls final
 {
+	using Ratio = arx_rls::Ratio;
+	using Gain = decltype(Output{} / Input{});
+	// [a_1 .. a_n b_0 .. b_m]'
+	using Coefficients = arx_rls::SplitVector < Ratio, Gain, N, M + 1 >;
+	// [-y(k-1) .. -y(k-n) u(k-d) .. u(k-d-m)]'
+	using Design = arx_rls::SplitVector < Output, Input, N, M + 1 >;
+	// The coefficients per unit of output: the update's gain.
+	using CoefficientsPerOutput = arx_rls::SplitVector < decltype(1.f / Output{}), decltype(1.f / Input{}), N, M + 1 >;
+	using Covariance = px4_typed_linear_algebra::Matrix<CoefficientsPerOutput, CoefficientsPerOutput>;
+	static constexpr size_t kSize{N + M + 1};
+
 public:
 	ArxRls()
 	{
@@ -77,43 +133,62 @@ public:
 
 	/*
 	 * return the vector of estimated parameters
-	 * [a_1 .. a_n b_0 .. b_m]'
+	 * [a_1 .. a_n b_0 .. b_m]', the b_i in Output per Input
 	 */
-	const matrix::Vector < float, N + M + 1 > &getCoefficients() const { return _theta_hat; }
-	const matrix::Vector < float, N + M + 1 > getVariances() const { return _P.diag(); }
-	float getInnovation() const { return _innovation; }
-	const matrix::Vector < float, N + M + 1 > &getDiffEstimate() const { return _diff_theta_hat; }
-
-	void reset(const matrix::Vector < float, N + M + 1 > &theta_init = {})
+	matrix::Vector<float, kSize> getCoefficients() const
 	{
-		/* _P.uncorrelateCovarianceSetVariance<N + M + 1>(0, 10e3f); // does not work */
-		_P.setZero();
+		matrix::Vector<float, kSize> value;
+		arx_rls::forEachIndex<kSize>([&](auto i) {
+			value(i) = _theta_hat.template at<i>().numerical_value_in(std::remove_cvref_t<decltype(_theta_hat.template at<i>())>::unit);
+		});
+		return value;
+	}
 
-		for (size_t i = 0; i < (N + M + 1); i++) {
-			_P(i, i) = 10e3f;
-		}
+	// The variances of the coefficients normalized by the output noise
+	// variance: of the a_i in 1/Output^2, of the b_i in 1/Input^2.
+	matrix::Vector<float, kSize> getVariances() const
+	{
+		matrix::Vector<float, kSize> value;
+		arx_rls::forEachIndex<kSize>([&](auto i) {
+			value(i) = _P.template at<i, i>().numerical_value_in(std::remove_cvref_t<decltype(_P.template at<i, i>())>::unit);
+		});
+		return value;
+	}
+
+	float getInnovation() const { return _innovation.numerical_value_in(Output::unit); }
+	const matrix::Vector<float, kSize> &getDiffEstimate() const { return _diff_theta_hat; }
+
+	void reset(const matrix::Vector<float, kSize> &theta_init = {})
+	{
+		_P = Covariance{};
+		_theta_hat = Coefficients{};
+
+		arx_rls::forEachIndex<kSize>([&](auto i) {
+			using Variance = std::remove_cvref_t<decltype(_P.template at<i, i>())>;
+			using Coefficient = std::remove_cvref_t<decltype(_theta_hat.template at<i>())>;
+			_P.template at<i, i>(10e3f * Variance::reference);
+			_theta_hat.template at<i>(theta_init(i) * Coefficient::reference);
+		});
 
 		_diff_theta_hat.setZero();
 
-		_theta_hat = theta_init;
-
 		for (size_t i = 0; i < M + D + 1; i++) {
-			_u[i] = 0.f;
+			_u[i] = Input{};
 		}
 
 		for (size_t i = 0; i < N + 1; i++) {
-			_y[i] = 0.f;
+			_y[i] = Output{};
 		}
 
 		_nb_samples = 0;
-		_innovation = 0.f;
+		_innovation = Output{};
 	}
 
 	void update(float u, float y)
 	{
-		const matrix::Vector < float, N + M + 1 > theta_prev = _theta_hat;
+		const Coefficients theta_prev = _theta_hat;
 
-		addInputOutput(u, y);
+		addInputOutput(u * Input::reference, y * Output::reference);
 
 		if (!isBufferFull()) {
 			// Do not start to update the RLS algorithm when the
@@ -121,22 +196,24 @@ public:
 			return;
 		}
 
-		const matrix::Vector < float, N + M + 1 > phi = constructDesignVector();
-		const matrix::Matrix < float, 1, N + M + 1 > phi_t = phi.transpose();
+		const Design phi = constructDesignVector();
+		const auto phi_t = fcarouge::transposed(phi);
 
-		_P = (_P - _P * phi * phi_t * _P / (_lambda + (phi_t * _P * phi)(0, 0))) / _lambda;
-		_innovation = _y[N] - (phi_t * _theta_hat)(0, 0);
-		_theta_hat = _theta_hat + _P * phi * _innovation;
+		// Divisions by a scalar multiply by its reciprocal, as the matrix library does.
+		const Ratio scale{_lambda *mp_units::one + (phi_t *_P * phi).template at<>()};
+		_P = Covariance{(_P - _P *phi *phi_t *_P * (1.f / scale)) *(1.f / _lambda)};
+		_innovation = Output{_y[N] - (phi_t * _theta_hat).template at<>()};
+		_theta_hat = Coefficients{_theta_hat + _P *phi * _innovation};
 
-		for (size_t i = 0; i < N + M + 1; i++) {
-			_diff_theta_hat(i) = fabsf(_theta_hat(i) - theta_prev(i));
-		}
-
-		/* fixCovarianceErrors(); // TODO: this could help against ill-conditioned matrix but needs more testing*/
+		arx_rls::forEachIndex<kSize>([&](auto i) {
+			using Coefficient = std::remove_cvref_t<decltype(_theta_hat.template at<i>())>;
+			_diff_theta_hat(i) = fabsf((_theta_hat.template at<i>() - theta_prev.template at<i>()).numerical_value_in(
+							   Coefficient::unit));
+		});
 	}
 
 private:
-	void addInputOutput(float u, float y)
+	void addInputOutput(Input u, Output y)
 	{
 		shiftRegisters();
 		_u[M + D] = u;
@@ -160,49 +237,27 @@ private:
 
 	bool isBufferFull() const { return _nb_samples > (M + N + D); }
 
-	matrix::Vector < float, N + M + 1 > constructDesignVector() const
+	Design constructDesignVector() const
 	{
-		matrix::Vector < float, N + M + 1 > phi;
+		Design phi;
 
-		for (size_t i = 0; i < N; i++) {
-			phi(i) = -_y[N - i - 1];
-		}
+		arx_rls::forEachIndex<N>([&](auto i) {
+			phi.template at<i>(-_y[N - i - 1]);
+		});
 
-		int j = 0;
-
-		for (size_t i = N; i < (N + M + 1); i++) {
-			phi(i) = _u[M - j];
-			j++;
-		}
+		arx_rls::forEachIndex < M + 1 > ([&](auto j) {
+			phi.template at < N + j > (_u[M - j]);
+		});
 
 		return phi;
 	}
 
-	void fixCovarianceErrors()
-	{
-		float max_var = 0.f;
-
-		for (size_t i = 0; i < (N + M + 1); i++) {
-			if (_P(i, i) > max_var) {
-				max_var = _P(i, i);
-			}
-		}
-
-		const float min_var_allowed = max_var * 0.1f;
-
-		for (size_t i = 0; i < (N + M + 1); i++) {
-			if (_P(i, i) < min_var_allowed) {
-				_P(i, i) = min_var_allowed;
-			}
-		}
-	}
-
-	matrix::SquareMatrix < float, N + M + 1 > _P;
-	matrix::Vector < float, N + M + 1 > _theta_hat;
-	matrix::Vector < float, N + M + 1 > _diff_theta_hat;
-	float _innovation{};
-	float _u[M + D + 1] {};
-	float _y[N + 1] {};
+	Covariance _P;
+	Coefficients _theta_hat;
+	matrix::Vector<float, kSize> _diff_theta_hat;
+	Output _innovation{};
+	Input _u[M + D + 1] {};
+	Output _y[N + 1] {};
 	unsigned _nb_samples{0};
 	float _lambda{1.f};
 };

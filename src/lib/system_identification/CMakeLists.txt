@@ -36,6 +36,7 @@ px4_add_library(SystemIdentification
 	system_identification.hpp
 	arx_rls.hpp
 )
+target_link_libraries(SystemIdentification PUBLIC fcarouge)
 
 px4_add_unit_gtest(SRC arx_rls_test.cpp LINKLIBS SystemIdentification)
 px4_add_unit_gtest(SRC system_identification_test.cpp LINKLIBS SystemIdentification mathlib)
