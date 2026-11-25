@@ -126,3 +126,58 @@ TEST_F(BatteryTest, KnownCellCountEstimatesCharge)
 	const battery_status_s empty_status = run(empty_battery, 9.f, 1.f);
 	EXPECT_EQ(empty_status.warning, battery_status_s::WARNING_EMERGENCY);
 }
+
+// the recursive least squares estimates the internal resistance from the voltage drop under a varying load
+TEST_F(BatteryTest, EstimatesInternalResistanceUnderLoad)
+{
+	int32_t n_cells = 3;
+	param_set(param_find("BAT1_N_CELLS"), &n_cells);
+
+	const float open_circuit_voltage_v = 3 * 4.f;
+	const float resistance_per_cell_ohm = 0.02f;
+
+	Battery battery(1, nullptr, 20_ms, battery_status_s::SOURCE_POWER_MODULE);
+	hrt_abstime timestamp = 1_s;
+	battery_status_s status{};
+
+	for (int i = 0; i < 20 * 50; i++) {
+		const float current_a = (i / 10) % 2 ? 30.f : 5.f;
+		battery.setConnected(true);
+		battery.updateVoltage(open_circuit_voltage_v - 3 * resistance_per_cell_ohm * current_a);
+		battery.updateCurrent(current_a);
+		battery.updateBatteryStatus(timestamp);
+		status = battery.getBatteryStatus();
+		timestamp += 20_ms;
+	}
+
+	EXPECT_NEAR(status.internal_resistance_estimate, resistance_per_cell_ohm, 0.002f);
+	EXPECT_NEAR(status.ocv_estimate, open_circuit_voltage_v, 0.1f);
+	EXPECT_LT(fabsf(status.prediction_error), 0.05f);
+}
+
+// the estimation accepts its updates whatever the magnitude of the current: a heavy load of tens of amperes
+TEST_F(BatteryTest, EstimatesInternalResistanceUnderHeavyLoad)
+{
+	int32_t n_cells = 6;
+	param_set(param_find("BAT1_N_CELLS"), &n_cells);
+
+	const float open_circuit_voltage_v = 6 * 4.f;
+	const float resistance_per_cell_ohm = 0.02f;
+
+	Battery battery(1, nullptr, 20_ms, battery_status_s::SOURCE_POWER_MODULE);
+	hrt_abstime timestamp = 1_s;
+	battery_status_s status{};
+
+	for (int i = 0; i < 20 * 50; i++) {
+		const float current_a = (i / 10) % 2 ? 150.f : 30.f;
+		battery.setConnected(true);
+		battery.updateVoltage(open_circuit_voltage_v - 6 * resistance_per_cell_ohm * current_a);
+		battery.updateCurrent(current_a);
+		battery.updateBatteryStatus(timestamp);
+		status = battery.getBatteryStatus();
+		timestamp += 20_ms;
+	}
+
+	EXPECT_NEAR(status.internal_resistance_estimate, resistance_per_cell_ohm, 0.002f);
+	EXPECT_NEAR(status.ocv_estimate, open_circuit_voltage_v, 0.2f);
+}

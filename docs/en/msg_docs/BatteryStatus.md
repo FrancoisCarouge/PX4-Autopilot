@@ -53,7 +53,7 @@ Battery instance information is also logged and streamed in MAVLink telemetry.
 | <a id="fld_volt_based_soc_estimate"></a>volt_based_soc_estimate           | `float32`     |              | [0 : 1]             | Normalized volt based state of charge estimate                                                              |
 | <a id="fld_voltage_prediction"></a>voltage_prediction                     | `float32`     | V            |                     | Predicted voltage                                                                                           |
 | <a id="fld_prediction_error"></a>prediction_error                         | `float32`     | V            |                     | Prediction error                                                                                            |
-| <a id="fld_estimation_covariance_norm"></a>estimation_covariance_norm     | `float32`     |              |                     | Norm of the covariance matrix                                                                               |
+| <a id="fld_estimation_covariance_norm"></a>estimation_covariance_norm     | `float32`     | 1/A^2        |                     | Determinant of the internal resistance estimation's covariance, normalized by the voltage noise variance    |
 
 ## Enums
 
@@ -191,7 +191,7 @@ float32 ocv_estimate_filtered # [V] Filtered open circuit voltage estimate
 float32 volt_based_soc_estimate # [-] [@range 0, 1] Normalized volt based state of charge estimate
 float32 voltage_prediction # [V] Predicted voltage
 float32 prediction_error # [V] Prediction error
-float32 estimation_covariance_norm # [-] Norm of the covariance matrix
+float32 estimation_covariance_norm # [1/A^2] Determinant of the internal resistance estimation's covariance, normalized by the voltage noise variance
 ```
 
 :::

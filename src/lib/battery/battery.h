@@ -214,10 +214,21 @@ private:
 	// Internal Resistance estimation
 	void updateInternalResistanceEstimation(const float voltage_v, const float current_a);
 	void resetInternalResistanceEstimation(const float voltage_v, const float current_a);
-	matrix::Vector2f _RLS_est; // [Open circuit voltage estimate [V], Total internal resistance estimate [Ohm]]^T
-	matrix::Matrix2f _estimation_covariance;
+	// The recursive least squares estimate of the open circuit voltage [V] and
+	// the total internal resistance [Ohm], with their covariance normalized by
+	// the voltage noise variance [1, 1/A; 1/A, 1/A^2]. Defined in battery.cpp
+	// and held in this storage: the typed linear algebra stays out of the
+	// drivers including this header.
+	struct Estimation;
+	static constexpr size_t kEstimationSize{24};
+	struct alignas(float) EstimationStorage {
+		unsigned char bytes[kEstimationSize];
+	} _estimation_storage{};
+
+	Estimation &estimation();
+	void initializeInternalResistanceEstimation(float open_circuit_voltage_v);
 	bool _internal_resistance_initialized{false};
-	float _estimation_covariance_norm{0.f};
+	float _estimation_covariance_norm{0.f}; // [1/A^2] Determinant of the estimation's covariance
 	float _internal_resistance_estimate{0.005f}; // [Ohm] Per cell estimate of the internal resistance
 	float _voltage_prediction{0.f}; // [V] Predicted voltage of the estimator
 	float _prediction_error{0.f}; // [V] Error between the predicted and measured voltage

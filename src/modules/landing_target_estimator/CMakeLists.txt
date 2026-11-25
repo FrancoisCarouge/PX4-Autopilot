@@ -42,4 +42,5 @@ px4_add_module(
 	MODULE_CONFIG
 		landing_target_estimator_params.yaml
 	DEPENDS
+		fcarouge
 	)

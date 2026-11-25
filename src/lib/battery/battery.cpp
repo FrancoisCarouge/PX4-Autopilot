@@ -43,16 +43,77 @@
 #include "battery.h"
 #include <mathlib/mathlib.h>
 #include <cstring>
+#include <new>
+#include <type_traits>
 #include <px4_platform_common/defines.h>
+#include <px4_typed_linear_algebra.hpp>
 
 using namespace time_literals;
 using namespace matrix;
+
+namespace
+{
+
+namespace tla = px4_typed_linear_algebra;
+
+using Volt = tla::Quantity<mp_units::si::volt>;
+using Ohm = tla::Quantity<mp_units::si::ohm>;
+using Ampere = tla::Quantity<mp_units::si::ampere>;
+using Ratio = tla::Quantity<mp_units::one>;
+
+inline constexpr auto per_ampere = mp_units::one / mp_units::si::ampere;
+inline constexpr auto per_ampere_squared = mp_units::one / (mp_units::si::ampere * mp_units::si::ampere);
+
+// The open circuit voltage and the total internal resistance.
+using Parameters = tla::Vector<Volt, Ohm>;
+// The regressor of the voltage on the parameters: 1 and the negated current.
+using Regressor = tla::Vector<Ratio, Ampere>;
+// The gain from the voltage error to the parameters, per volt.
+using Gain = tla::Vector<Ratio, tla::Quantity<per_ampere>>;
+// The parameters' covariance normalized by the voltage noise variance.
+using Covariance = tla::Matrix<Gain, Gain>;
+
+// The estimator's measure of its uncertainty, the determinant of its
+// covariance [1/A^2]: the area of its uncertainty ellipse, whatever the unit
+// of current. An update is accepted when it reduces it.
+float covarianceMeasure(const Covariance &p)
+{
+	return (p.at<0, 0>() * p.at<1, 1>() - p.at<1, 0>() * p.at<0, 1>()).numerical_value_in(per_ampere_squared);
+}
+
+} // namespace
+
+struct Battery::Estimation {
+	Parameters parameters;
+	Covariance covariance;
+};
+
+Battery::Estimation &Battery::estimation()
+{
+	return *std::launder(static_cast<Estimation *>(static_cast<void *>(_estimation_storage.bytes)));
+}
+
+void Battery::initializeInternalResistanceEstimation(const float open_circuit_voltage_v)
+{
+	const float n_cells = _params.n_cells;
+	Estimation &e = estimation();
+	e.parameters = Parameters{open_circuit_voltage_v *mp_units::si::volt, R_DEFAULT *n_cells *mp_units::si::ohm};
+	e.covariance = Covariance{};
+	e.covariance.at<0, 0>(OCV_COVARIANCE * n_cells * mp_units::one);
+	e.covariance.at<1, 1>(R_COVARIANCE * n_cells * per_ampere_squared);
+	_estimation_covariance_norm = covarianceMeasure(e.covariance);
+}
 
 Battery::Battery(int index, ModuleParams *parent, const int sample_interval_us, const uint8_t source) :
 	ModuleParams(parent),
 	_index(index < 1 || index > 9 ? 1 : index),
 	_source(source)
 {
+	static_assert(sizeof(Estimation) <= kEstimationSize, "Battery::kEstimationSize is too small for the estimation");
+	static_assert(alignof(Estimation) <= alignof(EstimationStorage), "Battery::EstimationStorage is under-aligned");
+	static_assert(std::is_trivially_destructible_v<Estimation>, "Battery never destroys its estimation");
+	new (_estimation_storage.bytes) Estimation{};
+
 	const float expected_filter_dt = static_cast<float>(sample_interval_us) * 1e-6f;
 	_current_average_filter_a.setParameters(expected_filter_dt, 50.f);
 	_ocv_filter_v.setParameters(expected_filter_dt, 1.f);
@@ -288,27 +349,30 @@ float Battery::calculateStateOfChargeVoltageBased(const float voltage_v, const f
 
 void Battery::updateInternalResistanceEstimation(const float voltage_v, const float current_a)
 {
-	Vector2f x{1, -current_a};
-	_voltage_prediction = (x.transpose() * _RLS_est)(0, 0);
-	_prediction_error = voltage_v - _voltage_prediction;
-	const Vector2f gamma = _estimation_covariance * x / (LAMBDA + (x.transpose() * _estimation_covariance * x)(0, 0));
-	const Vector2f RSL_est_temp = _RLS_est + gamma * _prediction_error;
-	const Matrix2f estimation_covariance_temp = (_estimation_covariance
-			- Matrix<float, 2, 1>(gamma) * (x.transpose() * _estimation_covariance)) / LAMBDA;
-	const float estimation_covariance_temp_norm =
-		sqrtf(powf(estimation_covariance_temp(0, 0), 2.f)
-		      + 2.f * powf(estimation_covariance_temp(1, 0), 2.f)
-		      + powf(estimation_covariance_temp(1, 1), 2.f));
+	Estimation &e = estimation();
+	const Volt voltage{voltage_v *mp_units::si::volt};
+	const Ampere current{current_a *mp_units::si::ampere};
+	const Regressor x{1.f *mp_units::one, -current};
+	const Volt prediction{fcarouge::transposed(x) *e.parameters};
+	_voltage_prediction = prediction.numerical_value_in(mp_units::si::volt);
+	const Volt error{voltage - prediction};
+	_prediction_error = error.numerical_value_in(mp_units::si::volt);
+	// Divisions by a scalar multiply by its reciprocal, as the matrix library does.
+	const Ratio scale{LAMBDA *mp_units::one + (fcarouge::transposed(x) * e.covariance * x).at<>()};
+	const Gain gamma{e.covariance *x *(1.f / scale)};
+	const Parameters parameters_temp{e.parameters + gamma * error};
+	const Covariance covariance_temp{(e.covariance - gamma * (fcarouge::transposed(x) * e.covariance)) *(1.f / LAMBDA)};
+	const float covariance_temp_norm = covarianceMeasure(covariance_temp);
 
-	if (estimation_covariance_temp_norm < _estimation_covariance_norm) { // Only update if estimation improves
-		_RLS_est = RSL_est_temp;
-		_estimation_covariance = estimation_covariance_temp;
-		_estimation_covariance_norm = estimation_covariance_temp_norm;
+	if (covariance_temp_norm < _estimation_covariance_norm) { // Only update if estimation improves
+		e.parameters = parameters_temp;
+		e.covariance = covariance_temp;
+		_estimation_covariance_norm = covariance_temp_norm;
 		_internal_resistance_estimate =
-			math::max(_RLS_est(1) / _params.n_cells, 0.f); // Only use positive values
+			math::max(e.parameters.at<1>().numerical_value_in(mp_units::si::ohm) / _params.n_cells, 0.f); // Only use positive values
 
 	} else { // Update OCV estimate with IR estimate
-		_RLS_est(0) = voltage_v + _RLS_est(1) * current_a;
+		e.parameters.at<0>(voltage + e.parameters.at<1>() * current);
 	}
 
 	_ocv_filter_v.update(voltage_v + _internal_resistance_estimate * _params.n_cells * current_a);
@@ -316,13 +380,7 @@ void Battery::updateInternalResistanceEstimation(const float voltage_v, const fl
 
 void Battery::resetInternalResistanceEstimation(const float voltage_v, const float current_a)
 {
-	_RLS_est(0) = voltage_v;
-	_RLS_est(1) = R_DEFAULT * _params.n_cells;
-	_estimation_covariance.setZero();
-	_estimation_covariance(0, 0) = OCV_COVARIANCE * _params.n_cells;
-	_estimation_covariance(1, 1) = R_COVARIANCE * _params.n_cells;
-	_estimation_covariance_norm = sqrtf(powf(_estimation_covariance(0, 0), 2.f) + 2.f * powf(_estimation_covariance(1, 0),
-					    2.f) + powf(_estimation_covariance(1, 1), 2.f));
+	initializeInternalResistanceEstimation(voltage_v);
 	_internal_resistance_estimate = R_DEFAULT;
 	_ocv_filter_v.reset(voltage_v + _internal_resistance_estimate * _params.n_cells * current_a);
 
@@ -462,14 +520,7 @@ void Battery::updateParams()
 	}
 
 	if (!_internal_resistance_initialized && _params.n_cells > 0) {
-		_RLS_est(0) = OCV_DEFAULT * _params.n_cells;
-		_RLS_est(1) = R_DEFAULT * _params.n_cells;
-		_estimation_covariance(0, 0) = OCV_COVARIANCE * _params.n_cells;
-		_estimation_covariance(0, 1) = 0.f;
-		_estimation_covariance(1, 0) = 0.f;
-		_estimation_covariance(1, 1) = R_COVARIANCE * _params.n_cells;
-		_estimation_covariance_norm = sqrtf(powf(_estimation_covariance(0, 0), 2.f) + 2.f * powf(_estimation_covariance(1, 0),
-						    2.f) + powf(_estimation_covariance(1, 1), 2.f));
+		initializeInternalResistanceEstimation(OCV_DEFAULT * _params.n_cells);
 		_internal_resistance_initialized = true;
 	}
 

@@ -37,3 +37,4 @@ add_library(yaw_estimator
 )
 
 add_dependencies(yaw_estimator prebuild_targets)
+target_link_libraries(yaw_estimator PRIVATE fcarouge)
