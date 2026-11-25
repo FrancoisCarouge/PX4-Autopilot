@@ -125,7 +125,7 @@ isr_debug(uint8_t level, const char *fmt, ...)
 	vsnprintf(msg[msg_next_in], sizeof(msg[0]), fmt, ap);
 	va_end(ap);
 	msg_next_in = (msg_next_in + 1) % NUM_MSG;
-	msg_counter++;
+	msg_counter = msg_counter + 1;
 }
 
 /*
